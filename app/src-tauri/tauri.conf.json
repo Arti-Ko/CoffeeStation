@@ -51,6 +51,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["app", "dmg", "nsis", "msi"],
     "category": "Productivity",
     "shortDescription": "Local-first PKM with knowledge graph and E2EE sync",

@@ -2,7 +2,7 @@
 
 import { useLiveQuery } from "dexie-react-hooks";
 import { db, type KanbanCard, type KanbanColumn } from "@/lib/db/schema";
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Menu, MenuContent, MenuItem, MenuTrigger, MenuSeparator } from "@/components/ui/dropdown";
@@ -412,27 +412,40 @@ function ColumnView({
   );
 }
 
-function DraggableCard({
-  card,
-  onDelete,
-  todayStr,
-}: {
-  card: KanbanCard;
-  onDelete: () => void;
-  todayStr: string;
-}) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.id });
-  return (
-    <div
-      ref={setNodeRef}
-      {...attributes}
-      {...listeners}
-      className={cn(isDragging && "opacity-30")}
-    >
-      <CardSurface card={card} onDelete={onDelete} todayStr={todayStr} />
-    </div>
-  );
-}
+// React.memo with a custom comparator: cards only re-render when their
+// own data changed, not when *any* note/card in the DB updated. Auto-save
+// fires useLiveQuery on every keystroke; without this, the whole board
+// re-renders on every single character typed in any open note.
+const DraggableCard = memo(
+  function DraggableCard({
+    card,
+    onDelete,
+    todayStr,
+  }: {
+    card: KanbanCard;
+    onDelete: () => void;
+    todayStr: string;
+  }) {
+    const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: card.id });
+    return (
+      <div
+        ref={setNodeRef}
+        {...attributes}
+        {...listeners}
+        className={cn(isDragging && "opacity-30")}
+      >
+        <CardSurface card={card} onDelete={onDelete} todayStr={todayStr} />
+      </div>
+    );
+  },
+  (a, b) =>
+    a.card.id === b.card.id &&
+    a.card.title === b.card.title &&
+    a.card.columnId === b.card.columnId &&
+    a.card.priority === b.card.priority &&
+    a.card.dayCreated === b.card.dayCreated &&
+    a.todayStr === b.todayStr,
+);
 
 function CardSurface({
   card,

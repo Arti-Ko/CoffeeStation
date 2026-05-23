@@ -3,7 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, useDeferredValue } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db/schema";
 import { useApp } from "@/lib/store";
@@ -19,6 +19,9 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Play,
+  Pause,
+  RotateCcw,
 } from "lucide-react";
 import {
   loadGraphSettings,
@@ -76,6 +79,27 @@ export function KnowledgeGraphView() {
   const [openDisplay, setOpenDisplay] = useState(false);
   const [openForces, setOpenForces] = useState(false);
 
+  // Timeline animation — plays notes in createdAt order. `animationCutoff`
+  // is the current timestamp ceiling: notes created after it are hidden.
+  // `null` means "show everything" (animation off).
+  const [animationCutoff, setAnimationCutoff] = useState<number | null>(null);
+  const [animationPlaying, setAnimationPlaying] = useState(false);
+  const [animationSpeed, setAnimationSpeed] = useState(1); // 0.5x..4x
+
+  const timeRange = useMemo(() => {
+    if (notes.length === 0) return null;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const n of notes) {
+      if (n.createdAt < min) min = n.createdAt;
+      if (n.createdAt > max) max = n.createdAt;
+    }
+    if (min === Infinity || max === -Infinity) return null;
+    // Pad either side by 1% so endpoints are visible.
+    const pad = Math.max(1000, (max - min) * 0.01);
+    return { min: min - pad, max: max + pad };
+  }, [notes]);
+
   useEffect(() => {
     loadGraphSettings().then(setSettings);
   }, []);
@@ -95,6 +119,11 @@ export function KnowledgeGraphView() {
     saveGraphSettings(p);
   }, []);
 
+  // useDeferredValue lets the input field stay responsive while React
+  // recomputes the heavier graphData with the new query. Without this,
+  // typing "tag:foo" in a 500-node graph stalls keystrokes.
+  const deferredSearch = useDeferredValue(settings?.search ?? "");
+
   // ── Build graph data ───────────────────────────────────────────────
   const { graphData, tagUniverse } = useMemo(() => {
     if (!settings) {
@@ -104,9 +133,16 @@ export function KnowledgeGraphView() {
       };
     }
 
-    const noteByTitle = new Map(notes.map((n) => [n.title.toLowerCase(), n]));
+    // Apply timeline cutoff first: animation hides notes created after the
+    // current timestamp ceiling, so the rest of the builder doesn't even
+    // see them. Links to clipped notes also drop naturally.
+    const visibleNotes = animationCutoff != null
+      ? notes.filter((n) => n.createdAt <= animationCutoff)
+      : notes;
+
+    const noteByTitle = new Map(visibleNotes.map((n) => [n.title.toLowerCase(), n]));
     const tagColor = new Map(tagsTable.map((t) => [t.name, t.color]));
-    const queryFn = parseQuery(settings.search);
+    const queryFn = parseQuery(deferredSearch);
 
     const groupPredicates = settings.groups.map((g) => ({
       group: g,
@@ -126,7 +162,7 @@ export function KnowledgeGraphView() {
     };
 
     const degree = new Map<string, number>();
-    notes.forEach((n) => {
+    visibleNotes.forEach((n) => {
       n.links.forEach((target) => {
         const t = noteByTitle.get(target.toLowerCase());
         if (!t) return;
@@ -136,12 +172,12 @@ export function KnowledgeGraphView() {
     });
 
     const tagUniverseMap = new Map<string, number>();
-    notes.forEach((n) =>
+    visibleNotes.forEach((n) =>
       n.tags.forEach((t) => tagUniverseMap.set(t, (tagUniverseMap.get(t) ?? 0) + 1)),
     );
 
     const noteNodes: RFGNode[] = [];
-    for (const n of notes) {
+    for (const n of visibleNotes) {
       const folderChain = folderChainFor(n.folderId, folders);
       if (!queryFn(n, folderChain)) continue;
       const { color, group } = colorFor(n, folderChain, "#94a3b8");
@@ -180,7 +216,7 @@ export function KnowledgeGraphView() {
     if (settings.showGhosts && !settings.showExistingOnly) {
       const unresolved = new Set<string>();
       for (const origin of noteNodes) {
-        const note = notes.find((n) => n.id === origin.id);
+        const note = visibleNotes.find((n) => n.id === origin.id);
         if (!note) continue;
         for (const target of note.links) {
           if (!noteByTitle.has(target.toLowerCase())) unresolved.add(target);
@@ -203,7 +239,7 @@ export function KnowledgeGraphView() {
     const allIds = new Set([...noteNodes, ...tagNodes, ...ghostNodes].map((n) => n.id));
     const links: RFGLink[] = [];
     for (const origin of noteNodes) {
-      const note = notes.find((n) => n.id === origin.id);
+      const note = visibleNotes.find((n) => n.id === origin.id);
       if (!note) continue;
       for (const target of note.links) {
         const t = noteByTitle.get(target.toLowerCase());
@@ -232,11 +268,39 @@ export function KnowledgeGraphView() {
     }
 
     return { graphData: { nodes: allNodes, links }, tagUniverse: tagUniverseMap };
-  }, [notes, folders, tagsTable, settings]);
+  }, [notes, folders, tagsTable, settings, animationCutoff, deferredSearch]);
 
   useEffect(() => {
     setStats({ nodes: graphData.nodes.length, links: graphData.links.length });
   }, [graphData.nodes.length, graphData.links.length]);
+
+  // Timeline animation rAF loop. Advances `animationCutoff` from min→max
+  // over a duration scaled by `animationSpeed`. Stops at the end. The
+  // simulation just sees more nodes appear and stitches them in via the
+  // running force layout — feels organic.
+  useEffect(() => {
+    if (!animationPlaying || !timeRange) return;
+    const totalMs = 12_000 / Math.max(0.1, animationSpeed); // 12s at 1x
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = now - last;
+      last = now;
+      setAnimationCutoff((cur) => {
+        const c = cur ?? timeRange.min;
+        const advance = ((timeRange.max - timeRange.min) * dt) / totalMs;
+        const next = c + advance;
+        if (next >= timeRange.max) {
+          setAnimationPlaying(false);
+          return timeRange.max;
+        }
+        return next;
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [animationPlaying, timeRange, animationSpeed]);
 
   // Apply force tunables in place when sliders change
   useEffect(() => {
@@ -529,6 +593,32 @@ export function KnowledgeGraphView() {
               }}
             />
           )}
+
+          {/* Bottom timeline animation overlay — like Obsidian's "Forces"
+              play button. Hidden when no notes exist. */}
+          {timeRange && (
+            <TimelineBar
+              range={timeRange}
+              cutoff={animationCutoff}
+              playing={animationPlaying}
+              speed={animationSpeed}
+              onPlayPause={() => {
+                if (animationCutoff == null || animationCutoff >= timeRange.max) {
+                  setAnimationCutoff(timeRange.min);
+                }
+                setAnimationPlaying((p) => !p);
+              }}
+              onReset={() => {
+                setAnimationPlaying(false);
+                setAnimationCutoff(null);
+              }}
+              onScrub={(v) => {
+                setAnimationPlaying(false);
+                setAnimationCutoff(v);
+              }}
+              onSpeedChange={setAnimationSpeed}
+            />
+          )}
         </div>
 
         <aside className="w-72 shrink-0 border-l border-border bg-bg-elev-1 overflow-y-auto">
@@ -704,6 +794,75 @@ export function KnowledgeGraphView() {
 }
 
 // ── Sidebar UI helpers ───────────────────────────────────────────────
+
+function TimelineBar({
+  range,
+  cutoff,
+  playing,
+  speed,
+  onPlayPause,
+  onReset,
+  onScrub,
+  onSpeedChange,
+}: {
+  range: { min: number; max: number };
+  cutoff: number | null;
+  playing: boolean;
+  speed: number;
+  onPlayPause: () => void;
+  onReset: () => void;
+  onScrub: (v: number) => void;
+  onSpeedChange: (v: number) => void;
+}) {
+  const value = cutoff ?? range.max;
+  const date = new Date(value);
+  const dateLabel = date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  return (
+    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-border bg-bg-elev-1/95 px-3 py-1.5 shadow-xl backdrop-blur-md">
+      <button
+        onClick={onPlayPause}
+        className="rounded-full bg-accent text-accent-fg p-1.5 hover:opacity-90 transition-opacity"
+        title={playing ? "Пауза" : "Воспроизвести таймлайн"}
+      >
+        {playing ? <Pause size={12} /> : <Play size={12} />}
+      </button>
+      <button
+        onClick={onReset}
+        className="text-fg-subtle hover:text-fg p-1 rounded-md hover:bg-bg-elev-2"
+        title="Сброс — показать всё"
+        disabled={cutoff == null}
+      >
+        <RotateCcw size={12} />
+      </button>
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        value={value}
+        onChange={(e) => onScrub(parseInt(e.target.value))}
+        className="w-56 accent-[var(--accent)]"
+      />
+      <span className="font-mono text-[11px] text-fg-muted min-w-[88px] text-right">
+        {dateLabel}
+      </span>
+      <select
+        value={speed}
+        onChange={(e) => onSpeedChange(parseFloat(e.target.value))}
+        className="rounded-md border border-border bg-bg text-[11px] text-fg-muted px-1.5 py-0.5 focus:border-accent focus:outline-none"
+        title="Скорость"
+      >
+        <option value={0.5}>0.5x</option>
+        <option value={1}>1x</option>
+        <option value={2}>2x</option>
+        <option value={4}>4x</option>
+      </select>
+    </div>
+  );
+}
 
 function Group({
   title,

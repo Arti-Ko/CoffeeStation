@@ -63,8 +63,7 @@ export const NAV_ITEMS: {
  */
 export function SidebarCollapsedRail() {
   const toggleSidebar = useApp((s) => s.toggleSidebar);
-  const [tab, setTab] = useState<SidebarTab>("outline");
-  return <CollapsedRail tab={tab} setTab={setTab} onExpand={toggleSidebar} />;
+  return <CollapsedRail tab="outline" setTab={() => {}} onExpand={toggleSidebar} />;
 }
 
 export function Sidebar() {
@@ -111,26 +110,18 @@ export function Sidebar() {
 }
 
 function NavList({ view }: { view: ReturnType<typeof useApp.getState>["view"] }) {
-  const hiddenIds = useLiveQuery(() => db.settings.get("ui.hiddenNav")) as
-    | { value: string[] }
-    | undefined;
-  const customOrder = useLiveQuery(() => db.settings.get("ui.navOrder")) as
-    | { value: string[] }
-    | undefined;
-
-  const hidden = new Set(hiddenIds?.value ?? []);
-  const items = customOrder?.value
-    ? [...customOrder.value.map((k) => NAV_ITEMS.find((n) => n.key === k)).filter(Boolean) as typeof NAV_ITEMS,
-       ...NAV_ITEMS.filter((n) => !(customOrder.value ?? []).includes(n.key))]
-    : NAV_ITEMS;
-
+  const items = useVisibleNavItems();
   return (
     <nav className="mt-3 px-2 space-y-0.5">
-      {items
-        .filter((n) => !hidden.has(n.key))
-        .map((n) => (
-          <NavItem key={n.key} Icon={n.Icon} label={n.fallbackLabel} active={n.match(view.kind)} onClick={n.go} />
-        ))}
+      {items.map((n) => (
+        <NavItem
+          key={n.key}
+          Icon={n.Icon}
+          label={n.fallbackLabel}
+          active={n.match(view.kind)}
+          onClick={n.go}
+        />
+      ))}
     </nav>
   );
 }
@@ -203,36 +194,76 @@ function TabBtn({
   );
 }
 
+/**
+ * Apply hidden + order preferences (stored under `ui.hiddenNav` /
+ * `ui.navOrder`) to the canonical NAV_ITEMS list. Both `NavList` and
+ * `CollapsedRail` go through this so the rail respects Settings the same
+ * way the expanded panel does.
+ */
+function useVisibleNavItems(): typeof NAV_ITEMS {
+  const hiddenIds = useLiveQuery(() => db.settings.get("ui.hiddenNav")) as
+    | { value: string[] }
+    | undefined;
+  const customOrder = useLiveQuery(() => db.settings.get("ui.navOrder")) as
+    | { value: string[] }
+    | undefined;
+  const hidden = new Set(hiddenIds?.value ?? []);
+  const items = customOrder?.value
+    ? [
+        ...(customOrder.value
+          .map((k) => NAV_ITEMS.find((n) => n.key === k))
+          .filter(Boolean) as typeof NAV_ITEMS),
+        ...NAV_ITEMS.filter((n) => !(customOrder.value ?? []).includes(n.key)),
+      ]
+    : NAV_ITEMS;
+  return items.filter((n) => !hidden.has(n.key));
+}
+
 function CollapsedRail({
-  tab,
-  setTab,
   onExpand,
 }: {
   tab: SidebarTab;
   setTab: (v: SidebarTab) => void;
   onExpand: () => void;
 }) {
-  const { view, setView, setCommandPaletteOpen } = useApp();
+  const view = useApp((s) => s.view);
+  const setCommandPaletteOpen = useApp((s) => s.setCommandPaletteOpen);
+  const setView = useApp((s) => s.setView);
   const t = useT();
+  const items = useVisibleNavItems();
 
   return (
     <aside className="flex h-full w-full min-w-12 shrink-0 flex-col items-center border-l border-border bg-bg-elev-1 py-3 gap-1">
-      <button onClick={onExpand} className="text-fg-muted hover:text-fg p-2 rounded-md hover:bg-bg-elev-2" title="Развернуть">
+      <button
+        onClick={onExpand}
+        className="text-fg-muted hover:text-fg p-2 rounded-md hover:bg-bg-elev-2"
+        title="Развернуть"
+      >
         <PanelRightOpen size={16} />
       </button>
       <div className="my-2 h-px w-6 bg-border" />
-      <RailIcon Icon={Coffee} active={view.kind === "knowledge-base"} label="Knowledge Base" onClick={() => setView({ kind: "knowledge-base" })} />
-      <RailIcon Icon={CalendarDays} active={view.kind === "daily"} label={t("nav.daily")} onClick={() => setView({ kind: "daily" })} />
-      <RailIcon Icon={Kanban} active={view.kind === "kanban"} label="Kanban" onClick={() => setView({ kind: "kanban" })} />
-      <RailIcon Icon={Network} active={view.kind === "knowledge-graph"} label={t("nav.graph")} onClick={() => setView({ kind: "knowledge-graph" })} />
-      <RailIcon Icon={Layers} active={view.kind === "canvas"} label={t("nav.canvas")} onClick={() => setView({ kind: "canvas" })} />
-      <RailIcon Icon={FilesIcon} active={view.kind === "files"} label="Все файлы" onClick={() => setView({ kind: "files" })} />
-      <RailIcon Icon={DatabaseIcon} active={view.kind === "database"} label={t("nav.databases")} onClick={() => setView({ kind: "database", id: "" })} />
-      <RailIcon Icon={Palette} active={view.kind === "theme-studio"} label="Theme Studio" onClick={() => setView({ kind: "theme-studio" })} />
+      {items.map((n) => (
+        <RailIcon
+          key={n.key}
+          Icon={n.Icon}
+          active={n.match(view.kind)}
+          label={n.fallbackLabel}
+          onClick={n.go}
+        />
+      ))}
       <div className="my-2 h-px w-6 bg-border" />
-      <RailIcon Icon={Search} label={t("nav.search")} onClick={() => setCommandPaletteOpen(true)} />
+      <RailIcon
+        Icon={Search}
+        label={t("nav.search")}
+        onClick={() => setCommandPaletteOpen(true)}
+      />
       <div className="flex-1" />
-      <RailIcon Icon={Settings} active={view.kind === "settings"} label={t("nav.settings")} onClick={() => setView({ kind: "settings" })} />
+      <RailIcon
+        Icon={Settings}
+        active={view.kind === "settings"}
+        label={t("nav.settings")}
+        onClick={() => setView({ kind: "settings" })}
+      />
     </aside>
   );
 }

@@ -145,8 +145,8 @@ export function UpdateModal() {
         </div>
 
         {available.notes && (
-          <div className="mx-5 mt-3 max-h-40 overflow-y-auto rounded-md border border-border bg-bg px-3 py-2 text-[12px] leading-relaxed text-fg-muted whitespace-pre-wrap">
-            {available.notes}
+          <div className="mx-5 mt-3 max-h-44 overflow-y-auto rounded-md border border-border bg-bg px-3 py-2.5 text-[12px] leading-relaxed text-fg-muted">
+            <ReleaseNotes raw={available.notes} />
           </div>
         )}
 
@@ -190,4 +190,81 @@ export function UpdateModal() {
       </div>
     </div>
   );
+}
+
+/**
+ * Lightweight Markdown-ish renderer for release notes. We deliberately don't
+ * pull in a full Markdown parser — the release body for this app is always a
+ * short bullet list, so a few regex passes give us the right look:
+ *
+ *   - Heading lines (`##`) become small caps section labels
+ *   - Lines starting with `-` or `*` become rendered bullets with accent dot
+ *   - `**bold**`, `*italic*`, and `` `code` `` get inline styling
+ *   - Blank lines flush the current bullet group
+ */
+function ReleaseNotes({ raw }: { raw: string }) {
+  const lines = raw.split(/\r?\n/);
+  const blocks: React.ReactNode[] = [];
+  let bulletBuffer: string[] = [];
+
+  const flushBullets = () => {
+    if (bulletBuffer.length === 0) return;
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="my-1 space-y-1">
+        {bulletBuffer.map((b, i) => (
+          <li key={i} className="flex gap-2 leading-snug">
+            <span className="mt-[6px] h-[5px] w-[5px] shrink-0 rounded-full bg-accent" />
+            <span dangerouslySetInnerHTML={{ __html: inlineMd(b) }} />
+          </li>
+        ))}
+      </ul>,
+    );
+    bulletBuffer = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushBullets();
+      continue;
+    }
+    const bullet = trimmed.match(/^[-*]\s+(.*)$/);
+    if (bullet) {
+      bulletBuffer.push(bullet[1]);
+      continue;
+    }
+    flushBullets();
+    const heading = trimmed.match(/^#{1,6}\s+(.*)$/);
+    if (heading) {
+      blocks.push(
+        <div
+          key={`h-${blocks.length}`}
+          className="mt-2 mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-fg"
+        >
+          {heading[1]}
+        </div>,
+      );
+      continue;
+    }
+    blocks.push(
+      <p
+        key={`p-${blocks.length}`}
+        className="my-1"
+        dangerouslySetInnerHTML={{ __html: inlineMd(trimmed) }}
+      />,
+    );
+  }
+  flushBullets();
+  return <>{blocks}</>;
+}
+
+/** Inline markdown: `**bold**`, `*italic*`, `` `code` ``. Escapes HTML first. */
+function inlineMd(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/`([^`]+)`/g, '<code class="rounded bg-bg-elev-2 px-1 py-0.5 text-[11px]">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong class="text-fg">$1</strong>')
+    .replace(/(^|\s)\*([^*]+)\*/g, '$1<em>$2</em>');
 }

@@ -702,7 +702,7 @@ async fn git_lfs_setup(local_path: String, patterns: Vec<String>) -> Result<GitR
 // embedded Personal Access Token in the HTTPS URL — Tauri keeps the token in
 // IndexedDB on the JS side, we only see it for the duration of one call.
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitConfig {
     pub repo_url: String, // https://github.com/<owner>/<repo>.git
     pub token: String,    // ghp_… personal access token
@@ -819,6 +819,19 @@ async fn git_init_or_clone(config: GitConfig) -> Result<GitResult, String> {
 #[tauri::command]
 async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
     let path = std::path::PathBuf::from(&config.local_path);
+
+    // 0. Auto-init: if the working dir isn't a git repo yet (user reset
+    //    localPath after the _git→vault-root migration; auto-sync timer
+    //    fired before the user clicked "Connect repo"; etc.), bootstrap it
+    //    here. `git_init_or_clone` is idempotent — no-ops on existing repo,
+    //    clones into empty dir, init+remote in non-empty dir.
+    if !path.join(".git").exists() {
+        let init = git_init_or_clone(config.clone()).await?;
+        if !init.success {
+            return Ok(init);
+        }
+    }
+
     let url = embed_token(&config.repo_url, &config.token);
     let _ = run_git(&["remote", "set-url", "origin", &url], &path);
 

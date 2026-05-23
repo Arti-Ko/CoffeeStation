@@ -75,6 +75,28 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: '1'
 
+      # Extract the annotated tag's message and feed it to tauri-action as the
+      # release body. `git tag -m "..."` is the source of truth for changelog
+      # per version — write user-friendly bullets there when bumping.
+      - name: Read changelog from tag annotation
+        id: changelog
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          git fetch --tags --force --no-recurse-submodules origin "refs/tags/${tag}:refs/tags/${tag}" || true
+          body=$(git tag -l --format='%(contents)' "${tag}")
+          if [ -z "${body}" ]; then
+            body=$(git tag -l --format='%(subject)' "${tag}")
+          fi
+          if [ -z "${body}" ]; then
+            body="Release ${tag}"
+          fi
+          {
+            echo "body<<__CS_EOF__"
+            echo "${body}"
+            echo "__CS_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build & release via tauri-action
         uses: tauri-apps/tauri-action@v0
         env:
@@ -89,15 +111,11 @@ jobs:
           tauriScript: pnpm tauri
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: 'CoffeeStation ${{ github.event.inputs.tag || github.ref_name }}'
-          releaseBody: |
-            See [README](https://github.com/${{ github.repository }}/blob/main/README.md) for install and feature list.
-
-            ## Downloads
-            - **macOS (Apple Silicon)** — `CoffeeStation_*_aarch64.dmg`
-            - **Windows (x64)** — `CoffeeStation_*_x64-setup.exe`
-
-            Existing installs will see an in-app update prompt automatically.
-            First-launch on macOS: right-click → Open (unsigned).
+          # The body is the *changelog* shown in the in-app update modal and
+          # on the GitHub release page. The modal parses Markdown bullets, so
+          # write tight per-line bullets. Source the actual lines from the
+          # tag annotation: `git tag v0.2.4 -m "<changelog>"`.
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
           # `updaterJsonPreferNsis: true` makes the latest.json point at the

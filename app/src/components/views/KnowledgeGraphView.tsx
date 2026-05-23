@@ -30,8 +30,9 @@ interface GraphNode extends SimulationNodeDatum {
   group: string;            // colour-group key (folder name / tag / etc.)
   color: string;            // resolved CSS colour string
   links: number;            // degree — drives node radius
-  type: "note" | "tag";
+  type: "note" | "tag" | "ghost";  // ghost = wiki-link to a not-yet-created note
   tags: string[];           // for filtering
+  spawnAt: number;          // monotonic ms when this node first appeared (drives fade-in)
 }
 interface GraphEdge extends SimulationLinkDatum<GraphNode> {
   source: string | GraphNode;
@@ -68,6 +69,9 @@ export function KnowledgeGraphView() {
   const edgesRef = useRef<GraphEdge[]>([]);
   const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
   const positionsRef = useRef<Map<string, { x: number; y: number; vx: number; vy: number }>>(new Map());
+  // Persist spawnAt per node id across renders so we don't reset the fade-in
+  // every time the live query refires.
+  const spawnCacheRef = useRef<Map<string, number>>(new Map());
   const transformRef = useRef<ZoomTransform>(zoomIdentity);
   const hoveredRef = useRef<GraphNode | null>(null);
   const draggingRef = useRef<GraphNode | null>(null);
@@ -78,6 +82,7 @@ export function KnowledgeGraphView() {
   const [size, setSize] = useState({ w: 1200, h: 800 });
   const [showOrphans, setShowOrphans] = useState(true);
   const [showTags, setShowTags] = useState(false);
+  const [showGhosts, setShowGhosts] = useState(true);
   const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
   const [colorBy, setColorBy] = useState<ColorBy>("folder");
   const [linkDistance, setLinkDistance] = useState(90);
@@ -140,15 +145,27 @@ export function KnowledgeGraphView() {
       return folderById.get(n.folderId ?? "")?.name ?? "Vault";
     };
 
-    let noteNodes: GraphNode[] = notes.map((n) => ({
-      id: n.id,
-      title: n.title || "Untitled",
-      group: groupOf(n),
-      color: pickColor(n),
-      links: degree.get(n.id) ?? 0,
-      type: "note" as const,
-      tags: n.tags,
-    }));
+    const now = performance.now();
+    // Spawn timestamps are kept across renders in a ref so a node that
+    // existed last frame keeps its original spawnAt. New nodes get `now`
+    // and fade in via the canvas draw loop.
+    const cache = spawnCacheRef.current;
+
+    let noteNodes: GraphNode[] = notes.map((n) => {
+      const id = n.id;
+      const spawnAt = cache.get(id) ?? now;
+      cache.set(id, spawnAt);
+      return {
+        id,
+        title: n.title || "Untitled",
+        group: groupOf(n),
+        color: pickColor(n),
+        links: degree.get(id) ?? 0,
+        type: "note" as const,
+        tags: n.tags,
+        spawnAt,
+      };
+    });
 
     // Tag filter: keep only notes that have AT LEAST ONE selected tag
     // (when filter is non-empty). Empty filter = no constraint.
@@ -160,18 +177,55 @@ export function KnowledgeGraphView() {
     if (showTags) {
       const usedTags = new Set<string>();
       noteNodes.forEach((n) => n.tags.forEach((t) => usedTags.add(t)));
-      tagNodes = Array.from(usedTags).map((t) => ({
-        id: "tag:" + t,
-        title: "#" + t,
-        group: "tag",
-        color: tagColorByName.get(t) ?? "var(--accent)",
-        links: 0,
-        type: "tag" as const,
-        tags: [t],
-      }));
+      tagNodes = Array.from(usedTags).map((t) => {
+        const id = "tag:" + t;
+        const spawnAt = cache.get(id) ?? now;
+        cache.set(id, spawnAt);
+        return {
+          id,
+          title: "#" + t,
+          group: "tag",
+          color: tagColorByName.get(t) ?? "var(--accent)",
+          links: 0,
+          type: "tag" as const,
+          tags: [t],
+          spawnAt,
+        };
+      });
     }
 
-    const allNodeIds = new Set([...noteNodes, ...tagNodes].map((n) => n.id));
+    // Ghost nodes: every wiki-link target that doesn't resolve to an
+    // existing note. Same visual model as Obsidian — semi-transparent
+    // dashed-outline circles. They keep the user honest about broken
+    // references.
+    const ghostNodes: GraphNode[] = [];
+    if (showGhosts) {
+      const unresolved = new Set<string>();
+      notes.forEach((n) => {
+        n.links.forEach((target) => {
+          if (!noteByTitle.has(target.toLowerCase())) unresolved.add(target);
+        });
+      });
+      unresolved.forEach((title) => {
+        const id = "ghost:" + title.toLowerCase();
+        const spawnAt = cache.get(id) ?? now;
+        cache.set(id, spawnAt);
+        ghostNodes.push({
+          id,
+          title,
+          group: "(не создано)",
+          color: "var(--fg-subtle)",
+          links: 0,
+          type: "ghost" as const,
+          tags: [],
+          spawnAt,
+        });
+      });
+    }
+
+    const allNodeIds = new Set(
+      [...noteNodes, ...tagNodes, ...ghostNodes].map((n) => n.id),
+    );
     const edgeList: GraphEdge[] = [];
     const adj = new Map<string, Set<string>>();
     const link = (a: string, b: string, kind: GraphEdge["kind"]) => {
@@ -187,12 +241,16 @@ export function KnowledgeGraphView() {
       if (!allNodeIds.has(n.id)) return;
       n.links.forEach((targetTitle) => {
         const target = noteByTitle.get(targetTitle.toLowerCase());
-        if (target) link(n.id, target.id, "link");
+        if (target) {
+          link(n.id, target.id, "link");
+        } else if (showGhosts) {
+          link(n.id, "ghost:" + targetTitle.toLowerCase(), "link");
+        }
       });
       if (showTags) n.tags.forEach((t) => link(n.id, "tag:" + t, "tag"));
     });
 
-    let allNodes = [...noteNodes, ...tagNodes];
+    let allNodes = [...noteNodes, ...tagNodes, ...ghostNodes];
     if (!showOrphans) {
       const connected = new Set<string>();
       edgeList.forEach((e) => {
@@ -221,9 +279,9 @@ export function KnowledgeGraphView() {
       edges: edgeList,
       adjacency: adj,
       tagUniverse,
-      topologyKey: `${nodeSig}::${edgeSig}::${colorBy}`,
+      topologyKey: `${nodeSig}::${edgeSig}::${colorBy}::${showGhosts ? "g" : "n"}`,
     };
-  }, [notes, folders, tagsTable, showOrphans, showTags, tagFilter, colorBy]);
+  }, [notes, folders, tagsTable, showOrphans, showTags, showGhosts, tagFilter, colorBy]);
 
   // ── Mirror live colours/visuals onto already-simulated nodes ───────
   // When colorBy or tag-table changes we just want recolour, not relayout.
@@ -390,6 +448,7 @@ export function KnowledgeGraphView() {
 
       // Edges first
       ctx.lineCap = "round";
+      const nowEdgeMs = performance.now();
       for (const e of liveEdges) {
         const s = e.source as GraphNode;
         const tgt = e.target as GraphNode;
@@ -399,7 +458,12 @@ export function KnowledgeGraphView() {
         const dim = sDim && tDim;
         const onPath = hovered && (s.id === hovered.id || tgt.id === hovered.id);
         ctx.strokeStyle = onPath ? accent : e.kind === "tag" ? accent : border;
-        ctx.globalAlpha = dim
+        // Edge fade-in matches the youngest of its two endpoints — links
+        // appear with the node that brought them in.
+        const youngest = Math.min(s.spawnAt, tgt.spawnAt);
+        const t01 = Math.min(1, Math.max(0, (nowEdgeMs - youngest) / 500));
+        const spawn = 1 - Math.pow(1 - t01, 3);
+        const base = dim
           ? hovered
             ? HOVER_DIM
             : SEARCH_DIM
@@ -407,20 +471,37 @@ export function KnowledgeGraphView() {
             ? 0.9
             : e.kind === "tag"
               ? 0.35
-              : 0.55;
+              : tgt.type === "ghost" || s.type === "ghost"
+                ? 0.3
+                : 0.55;
+        ctx.globalAlpha = base * spawn;
         ctx.lineWidth = onPath ? 1.8 / t.k : e.kind === "tag" ? 0.7 / t.k : 1 / t.k;
+        if (tgt.type === "ghost" || s.type === "ghost") {
+          ctx.setLineDash([3 / t.k, 2 / t.k]);
+        }
         ctx.beginPath();
         ctx.moveTo(s.x!, s.y!);
         ctx.lineTo(tgt.x!, tgt.y!);
         ctx.stroke();
+        ctx.setLineDash([]);
       }
 
       // Nodes
+      const nowMs = performance.now();
       for (const n of liveNodes) {
         if (n.x == null) continue;
         const dim = isDim(n);
-        const r = nodeRadius(n);
-        ctx.globalAlpha = dim ? (hovered ? HOVER_DIM : SEARCH_DIM) : 1;
+        const baseR = nodeRadius(n);
+
+        // Spawn animation: opacity 0→1 + scale 0.4→1 over 500ms. Cubic
+        // ease-out so it feels punchy at the start then settles.
+        const t01 = Math.min(1, Math.max(0, (nowMs - n.spawnAt) / 500));
+        const eased = 1 - Math.pow(1 - t01, 3);
+        const spawnAlpha = eased;
+        const spawnScale = 0.4 + eased * 0.6;
+        const r = baseR * spawnScale;
+
+        ctx.globalAlpha = (dim ? (hovered ? HOVER_DIM : SEARCH_DIM) : 1) * spawnAlpha;
 
         if (
           hovered &&
@@ -438,13 +519,26 @@ export function KnowledgeGraphView() {
           ctx.fill();
         }
 
-        ctx.beginPath();
-        ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2);
-        ctx.fillStyle = resolveColor(n.color, root) || fgMuted;
-        ctx.fill();
-        ctx.lineWidth = 1.5 / t.k;
-        ctx.strokeStyle = bg;
-        ctx.stroke();
+        if (n.type === "ghost") {
+          // Dashed-outline empty circle: signals "link target doesn't exist"
+          // without taking visual weight from real notes.
+          ctx.setLineDash([3 / t.k, 2 / t.k]);
+          ctx.beginPath();
+          ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2);
+          ctx.lineWidth = 1.2 / t.k;
+          ctx.strokeStyle = resolveColor(n.color, root) || fgMuted;
+          ctx.globalAlpha = (ctx.globalAlpha) * 0.7;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else {
+          ctx.beginPath();
+          ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2);
+          ctx.fillStyle = resolveColor(n.color, root) || fgMuted;
+          ctx.fill();
+          ctx.lineWidth = 1.5 / t.k;
+          ctx.strokeStyle = bg;
+          ctx.stroke();
+        }
       }
 
       // Labels
@@ -711,6 +805,18 @@ export function KnowledgeGraphView() {
                   type="checkbox"
                   checked={showTags}
                   onChange={(e) => setShowTags(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-[var(--accent)]"
+                />
+              </label>
+              <label className="flex items-center justify-between text-[12px] text-fg-muted">
+                <span className="flex items-center gap-1.5">
+                  «Ghost»-узлы
+                  <span className="text-[10px] text-fg-subtle">несуществующие [[ссылки]]</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={showGhosts}
+                  onChange={(e) => setShowGhosts(e.target.checked)}
                   className="h-3.5 w-3.5 accent-[var(--accent)]"
                 />
               </label>

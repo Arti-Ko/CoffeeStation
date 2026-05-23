@@ -206,8 +206,14 @@ export function NoteView({ noteId }: { noteId: string }) {
       </div>
 
       {mode === "wysiwyg" ? (
+        // No `key={noteId}` here: TipTap's Editor.tsx already syncs `content`
+        // via setContent when the prop changes (and the editor isn't focused).
+        // Re-keying forced a full editor teardown + re-init on every tab
+        // switch — instantiating ~12 extensions + lowlight grammars added up
+        // to 20–40s of jank on big vaults. Reusing the instance is fine; the
+        // only cost is undo history can span notes, which mirrors how
+        // Obsidian's per-tab editor works.
         <Editor
-          key={noteId}
           content={note.content}
           onUpdate={saveContent}
           onEditorReady={setEditorInstance}

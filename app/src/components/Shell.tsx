@@ -49,6 +49,10 @@ const KanbanView = dynamic(
   () => import("@/components/views/KanbanView").then((m) => m.KanbanView),
   { ssr: false, loading: () => <LazyFallback label="Канбан" /> },
 );
+const LogsView = dynamic(
+  () => import("@/components/views/LogsView").then((m) => m.LogsView),
+  { ssr: false, loading: () => <LazyFallback label="Логи" /> },
+);
 import { useApp, applyTheme } from "@/lib/store";
 import { seedIfEmpty } from "@/lib/db/seed";
 import { Toaster } from "sonner";
@@ -227,6 +231,8 @@ function renderView(view: ReturnType<typeof useApp.getState>["view"]) {
       return <ThemeStudio />;
     case "kanban":
       return <KanbanView />;
+    case "logs":
+      return <LogsView />;
     default:
       return <KnowledgeBaseView />;
   }

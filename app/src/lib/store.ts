@@ -19,7 +19,8 @@ export type MainView =
   | { kind: "kanban" }
   | { kind: "theme-studio" }
   | { kind: "web-clipper" }
-  | { kind: "search" };
+  | { kind: "search" }
+  | { kind: "logs" };
 
 interface AppState {
   view: MainView;
@@ -62,6 +63,21 @@ interface AppState {
    *  session and skipped-version state for one round. */
   updateCheckNonce: number;
   requestUpdateCheck: () => void;
+
+  /** Current in-flight git sync operation, or null when idle. Drives the
+   *  progress bar in the Logs view and any other UI that wants to mirror
+   *  sync state without each component owning its own subscription. */
+  syncOp: SyncOpState | null;
+  setSyncOp: (s: SyncOpState | null) => void;
+}
+
+export interface SyncOpState {
+  kind: "push" | "pull" | "init";
+  reason: string;
+  message: string;       // current step (e.g. "Stashing local changes...")
+  startedAt: number;
+  /** When known (e.g. files processed / total files), drives the bar. */
+  progress?: { current: number; total: number };
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -145,6 +161,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   updateCheckNonce: 0,
   requestUpdateCheck: () => set((s) => ({ updateCheckNonce: s.updateCheckNonce + 1 })),
+
+  syncOp: null,
+  setSyncOp: (s) => set({ syncOp: s }),
 }));
 
 export function applyTheme(theme: "light" | "dark" | "system") {

@@ -246,6 +246,26 @@ export interface KanbanCard {
   priority?: "low" | "medium" | "high";
 }
 
+/**
+ * One entry per finished sync operation. Powers the Logs view and lets the
+ * user inspect what `pushAll` / `pullRepo` actually did (raw stdout/stderr
+ * from the git invocations, success flag, duration, reason such as
+ * "manual" / "blur" / "idle"). Bounded by trimming the oldest entries to
+ * 200 (see `appendSyncLog` in lib/sync/log.ts) so it never grows unbounded.
+ */
+export interface SyncLogEntry {
+  id: string;
+  kind: "push" | "pull" | "init" | "info" | "error";
+  reason: string;                // "manual" | "blur" | "focus" | "idle" | ...
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+  success: boolean;
+  message: string;               // short headline shown in the list
+  detail?: string;                // multi-line stdout/stderr for the expandable row
+  added?: number;                 // number of notes synced (if known)
+}
+
 class CoffeeStationDB extends Dexie {
   notes!: EntityTable<Note, "id">;
   folders!: EntityTable<Folder, "id">;
@@ -263,6 +283,7 @@ class CoffeeStationDB extends Dexie {
   published!: EntityTable<PublishedNote, "id">;
   kanbanColumns!: EntityTable<KanbanColumn, "id">;
   kanbanCards!: EntityTable<KanbanCard, "id">;
+  syncLog!: EntityTable<SyncLogEntry, "id">;
 
   constructor() {
     super("coffeestation");
@@ -285,6 +306,9 @@ class CoffeeStationDB extends Dexie {
     this.version(2).stores({
       kanbanColumns: "id, order",
       kanbanCards: "id, columnId, order, dayCreated, archivedAt, dailyNoteId",
+    });
+    this.version(3).stores({
+      syncLog: "id, kind, startedAt, finishedAt, success",
     });
   }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "coffeestation"
-version = "0.2.17"
+version = "0.2.18"
 description = "CoffeeStation — local-first PKM desktop app"
 authors = ["Arti-Ko"]
 license = "MIT"

@@ -15,6 +15,7 @@ const dict: Record<string, Record<Locale, string>> = {
   "nav.templates": { ru: "Шаблоны", en: "Templates" },
   "nav.publishing": { ru: "Публикация", en: "Publishing" },
   "nav.search": { ru: "Поиск", en: "Search" },
+  "nav.logs": { ru: "Логи", en: "Logs" },
   "nav.settings": { ru: "Настройки", en: "Settings" },
   "nav.clipper": { ru: "Web Clipper", en: "Web Clipper" },
   "nav.ai": { ru: "AI ассистент", en: "AI assistant" },

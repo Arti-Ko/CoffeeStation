@@ -22,6 +22,8 @@ import {
   Play,
   Pause,
   RotateCcw,
+  PanelRightClose,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
   loadGraphSettings,
@@ -47,6 +49,8 @@ interface RFGNode {
   type: "note" | "tag" | "ghost";
   tags: string[];
   folderChain: string;
+  /** Used by the timeline animation: hidden when `createdAt > animationCutoff`. */
+  createdAt: number;
   x?: number;
   y?: number;
   z?: number;
@@ -90,6 +94,10 @@ export function KnowledgeGraphView() {
   const [openGroups, setOpenGroups] = useState(false);
   const [openDisplay, setOpenDisplay] = useState(false);
   const [openForces, setOpenForces] = useState(false);
+  // Whole settings sidebar can collapse to give the canvas the full width.
+  // Persists in component-local state only; the gear button on the canvas
+  // brings it back.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Timeline animation — plays notes in createdAt order. `animationCutoff`
   // is the current timestamp ceiling: notes created after it are hidden.
@@ -145,12 +153,13 @@ export function KnowledgeGraphView() {
       };
     }
 
-    // Apply timeline cutoff first: animation hides notes created after the
-    // current timestamp ceiling, so the rest of the builder doesn't even
-    // see them. Links to clipped notes also drop naturally.
-    const visibleNotes = animationCutoff != null
-      ? notes.filter((n) => n.createdAt <= animationCutoff)
-      : notes;
+    // IMPORTANT: don't filter by `animationCutoff` here. Removing nodes
+    // mid-animation means the d3 simulation has to constantly add/remove
+    // bodies on every tick — that's exactly the dergan'naya animation the
+    // user complained about. Instead, every node is always present in the
+    // graphData. The paint callback (2D) and `nodeVisibility` callback (3D)
+    // read `animationCutoff` separately and fade/hide future-dated nodes.
+    const visibleNotes = notes;
 
     const noteByTitle = new Map(visibleNotes.map((n) => [n.title.toLowerCase(), n]));
     const tagColor = new Map(tagsTable.map((t) => [t.name, t.color]));
@@ -203,6 +212,7 @@ export function KnowledgeGraphView() {
         type: "note",
         tags: n.tags,
         folderChain,
+        createdAt: n.createdAt,
       });
     }
 
@@ -220,6 +230,7 @@ export function KnowledgeGraphView() {
           type: "tag",
           tags: [t],
           folderChain: "",
+          createdAt: 0, // always visible regardless of timeline cutoff
         });
       }
     }
@@ -244,6 +255,7 @@ export function KnowledgeGraphView() {
           type: "ghost",
           tags: [],
           folderChain: "",
+          createdAt: 0,
         });
       }
     }
@@ -305,7 +317,11 @@ export function KnowledgeGraphView() {
       tagUniverse: tagUniverseMap,
     };
     return { graphData: stableGraphRef.current.data, tagUniverse: tagUniverseMap };
-  }, [notes, folders, tagsTable, settings, animationCutoff, deferredSearch]);
+    // NB: `animationCutoff` is intentionally NOT in this dep list. The
+    // timeline animation drives per-frame opacity in the paint callbacks,
+    // not the topology — keeping graphData stable across animation ticks
+    // is what makes the spawn smooth.
+  }, [notes, folders, tagsTable, settings, deferredSearch]);
 
   useEffect(() => {
     setStats({ nodes: graphData.nodes.length, links: graphData.links.length });
@@ -384,7 +400,20 @@ export function KnowledgeGraphView() {
       const isNeighbor = !!(neighbours && neighbours.has(node.id));
       const dim = hoveredId && !isHover && !isNeighbor;
 
-      ctx.globalAlpha = dim ? 0.15 : 1;
+      // Timeline fade — soft, not binary. A node hits 1.0 opacity 600 ms
+      // before its createdAt mark and 0.0 600 ms after the cutoff, giving
+      // a gentle "ink-bleed" appearance instead of a hard pop-in.
+      let timelineAlpha = 1;
+      if (animationCutoff != null && node.createdAt > 0) {
+        const FADE = 600;
+        const diff = node.createdAt - animationCutoff;
+        if (diff <= -FADE) timelineAlpha = 1;
+        else if (diff >= FADE) timelineAlpha = 0;
+        else timelineAlpha = 0.5 - diff / (2 * FADE);
+      }
+      if (timelineAlpha <= 0.001) return; // skip entirely-hidden nodes
+
+      ctx.globalAlpha = (dim ? 0.15 : 1) * timelineAlpha;
 
       if (isHover || isNeighbor) {
         ctx.beginPath();
@@ -606,6 +635,22 @@ export function KnowledgeGraphView() {
                 const node = n as RFGNode;
                 return Math.pow(node.size * settings.nodeSize, 2) * 0.3;
               }}
+              // Timeline-aware visibility: hide future-dated nodes without
+              // dropping them from graphData (which would restart the sim).
+              nodeVisibility={(n: any) => {
+                const node = n as RFGNode;
+                if (animationCutoff == null || node.createdAt <= 0) return true;
+                return node.createdAt <= animationCutoff;
+              }}
+              linkVisibility={(l: any) => {
+                if (animationCutoff == null) return true;
+                const s = l.source as RFGNode;
+                const t = l.target as RFGNode;
+                return (
+                  (s.createdAt ?? 0) <= animationCutoff &&
+                  (t.createdAt ?? 0) <= animationCutoff
+                );
+              }}
               nodeOpacity={0.92}
               linkColor={linkColor}
               linkWidth={(l: any) => {
@@ -656,9 +701,36 @@ export function KnowledgeGraphView() {
               onSpeedChange={setAnimationSpeed}
             />
           )}
+
+          {/* Re-open button: only visible when the settings sidebar is
+              collapsed. Hugs the right edge so it doesn't fight with the
+              zoom controls in the bottom-right. */}
+          {!sidebarOpen && (
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-md border border-border bg-bg-elev-1/90 px-2.5 py-1.5 text-[11.5px] text-fg-muted hover:text-fg shadow-lg backdrop-blur"
+              title="Показать настройки графа"
+            >
+              <SlidersHorizontal size={12} />
+              Настройки
+            </button>
+          )}
         </div>
 
+        {sidebarOpen && (
         <aside className="w-72 shrink-0 border-l border-border bg-bg-elev-1 overflow-y-auto">
+          <div className="flex items-center justify-between px-4 pt-3 pb-1 sticky top-0 bg-bg-elev-1 z-10 border-b border-border">
+            <span className="text-[10.5px] font-semibold uppercase tracking-wider text-fg-subtle">
+              Настройки графа
+            </span>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="text-fg-subtle hover:text-fg p-1 rounded hover:bg-bg-elev-2"
+              title="Скрыть"
+            >
+              <PanelRightClose size={12} />
+            </button>
+          </div>
           <Group
             open={openFilters}
             onToggle={() => setOpenFilters(!openFilters)}
@@ -817,6 +889,7 @@ export function KnowledgeGraphView() {
             </ul>
           </section>
         </aside>
+        )}
       </div>
 
       {ghostPrompt && (

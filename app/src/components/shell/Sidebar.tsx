@@ -19,6 +19,7 @@ import {
   FilesIcon,
   Kanban,
   FileText,
+  ScrollText,
 } from "lucide-react";
 import { db } from "@/lib/db/schema";
 import { useApp } from "@/lib/store";
@@ -48,6 +49,7 @@ export const NAV_ITEMS: {
   { key: "database", Icon: DatabaseIcon, labelKey: "nav.databases", fallbackLabel: "Базы данных", match: (k) => k === "database", go: () => useApp.getState().setView({ kind: "database", id: "" }) },
   { key: "templates", Icon: FileText, labelKey: "nav.templates", fallbackLabel: "Шаблоны", match: (k) => k === "templates", go: () => useApp.getState().setView({ kind: "templates" }) },
   { key: "theme-studio", Icon: Palette, labelKey: "nav.theme", fallbackLabel: "Theme Studio", match: (k) => k === "theme-studio", go: () => useApp.getState().setView({ kind: "theme-studio" }) },
+  { key: "logs", Icon: ScrollText, labelKey: "nav.logs", fallbackLabel: "Логи", match: (k) => k === "logs", go: () => useApp.getState().setView({ kind: "logs" }) },
 ];
 
 /**

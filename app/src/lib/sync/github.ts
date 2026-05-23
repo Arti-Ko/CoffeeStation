@@ -184,61 +184,133 @@ export async function initRepo(): Promise<SyncResult> {
   };
 }
 
-export async function pullRepo(_opts: { silent?: boolean } = {}): Promise<SyncResult> {
+export async function pullRepo(opts: { silent?: boolean; reason?: string } = {}): Promise<SyncResult> {
   if (!isDesktop()) return { ok: false, added: 0, message: "Только на десктопе" };
   const cfg = await getGitHubConfig();
   if (!cfg.repoUrl || !cfg.token || !cfg.localPath) {
     return { ok: false, added: 0, message: "GitHub не настроен" };
   }
-  const res = await invoke<GitResult>("git_pull", { config: await rustConfig(cfg) });
 
-  // git puts files on disk; the app reads from IndexedDB. Without this
-  // step, a successful pull leaves the user staring at an unchanged
-  // sidebar wondering where their notes went. Import scans the local
-  // path and upserts every .md/.markdown/.txt into Dexie.
+  // Drive the live progress indicator (LogsView reads this) and record
+  // the full operation in the syncLog table when finished. Each phase
+  // updates the message so the user sees what's actually happening.
+  const reason = opts.reason ?? "manual";
+  const startedAt = Date.now();
+  const { useApp } = await import("@/lib/store");
+  const { appendSyncLog } = await import("./log");
+  useApp.getState().setSyncOp({
+    kind: "pull",
+    reason,
+    message: "Получаем изменения с GitHub…",
+    startedAt,
+  });
+
+  let res: GitResult | undefined;
   let imported = 0;
-  if (res.success) {
-    try {
-      const { importVaultFromFolder } = await import("@/lib/desktop/import");
-      const result = await importVaultFromFolder(cfg.localPath);
-      imported = result.notes;
-    } catch (e) {
-      console.debug("[pull] vault import failed:", e);
-    }
-  }
+  let success = false;
+  let message = "";
+  let detail = "";
+  try {
+    res = await invoke<GitResult>("git_pull", { config: await rustConfig(cfg) });
+    success = res.success;
+    detail = res.stdout || res.stderr;
 
-  await saveGitHubConfig({ lastSyncedAt: Date.now(), lastError: res.success ? undefined : res.stderr });
-  return {
-    ok: res.success,
-    added: imported,
-    message: res.success
+    if (res.success) {
+      useApp.getState().setSyncOp({
+        kind: "pull",
+        reason,
+        message: "Сканируем vault и импортируем заметки в базу…",
+        startedAt,
+      });
+      try {
+        const { importVaultFromFolder } = await import("@/lib/desktop/import");
+        const result = await importVaultFromFolder(cfg.localPath);
+        imported = result.notes;
+      } catch (e) {
+        console.debug("[pull] vault import failed:", e);
+      }
+    }
+
+    message = res.success
       ? imported > 0
         ? `Получено и импортировано: ${imported} заметок`
         : "Изменения получены"
-      : "Pull не удался",
-    detail: res.stdout || res.stderr,
-  };
+      : "Pull не удался";
+  } finally {
+    useApp.getState().setSyncOp(null);
+    await saveGitHubConfig({
+      lastSyncedAt: Date.now(),
+      lastError: success ? undefined : res?.stderr,
+    });
+    await appendSyncLog({
+      kind: "pull",
+      reason,
+      startedAt,
+      success,
+      message: message || (success ? "Pull ok" : "Pull failed"),
+      detail,
+      added: imported,
+    });
+  }
+
+  return { ok: success, added: imported, message, detail };
 }
 
-export async function pushAll(message?: string): Promise<SyncResult> {
+export async function pushAll(message?: string, reason: string = "manual"): Promise<SyncResult> {
   if (!isDesktop()) return { ok: false, added: 0, message: "Только на десктопе" };
   const cfg = await getGitHubConfig();
   if (!cfg.repoUrl || !cfg.token || !cfg.localPath) {
     return { ok: false, added: 0, message: "GitHub не настроен" };
   }
-  const written = await exportNotesToWorkingDir(cfg);
-  const msg = message ?? `CoffeeStation sync: ${written} notes @ ${new Date().toISOString()}`;
-  const res = await invoke<GitResult>("git_commit_and_push", {
-    config: await rustConfig(cfg),
-    message: msg,
+
+  const startedAt = Date.now();
+  const { useApp } = await import("@/lib/store");
+  const { appendSyncLog } = await import("./log");
+  useApp.getState().setSyncOp({
+    kind: "push",
+    reason,
+    message: "Подготавливаем файлы из базы…",
+    startedAt,
   });
-  await saveGitHubConfig({ lastSyncedAt: Date.now(), lastError: res.success ? undefined : res.stderr });
-  return {
-    ok: res.success,
-    added: written,
-    message: res.success ? `Pushed: ${written} файлов` : "Push не удался",
-    detail: res.stdout || res.stderr,
-  };
+
+  let written = 0;
+  let success = false;
+  let detail = "";
+  let resultMessage = "";
+  try {
+    written = await exportNotesToWorkingDir(cfg);
+    useApp.getState().setSyncOp({
+      kind: "push",
+      reason,
+      message: `Коммит и push на GitHub (${written} файлов)…`,
+      startedAt,
+    });
+    const msg = message ?? `CoffeeStation sync: ${written} notes @ ${new Date().toISOString()}`;
+    const res = await invoke<GitResult>("git_commit_and_push", {
+      config: await rustConfig(cfg),
+      message: msg,
+    });
+    success = res.success;
+    detail = res.stdout || res.stderr;
+    resultMessage = res.success ? `Pushed: ${written} файлов` : "Push не удался";
+    await saveGitHubConfig({
+      lastSyncedAt: Date.now(),
+      lastError: success ? undefined : res.stderr,
+    });
+  } finally {
+    useApp.getState().setSyncOp(null);
+    await appendSyncLog({
+      kind: "push",
+      reason,
+      startedAt,
+      success,
+      message: resultMessage || (success ? "Push ok" : "Push failed"),
+      detail,
+      added: written,
+    });
+  }
+
+  return { ok: success, added: written, message: resultMessage, detail };
 }
 
 export async function isGitAvailable(): Promise<boolean> {

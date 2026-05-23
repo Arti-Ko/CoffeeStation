@@ -57,6 +57,26 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubTrigger,
+  ContextMenuSubContent,
+} from "@/components/ui/context-menu";
+import {
+  Rows,
+  Columns,
+  Merge,
+  Split,
+  ArrowRight,
+  ArrowLeft,
+  ArrowUp as ArrowUpIcon,
+  ArrowDown as ArrowDownIcon,
+} from "lucide-react";
 
 const lowlight = createLowlight({
   javascript: js,
@@ -339,8 +359,124 @@ export function Editor({
           </BMBtn>
         </BubbleMenu>
       )}
-      <EditorContent editor={editor} className="min-h-full" />
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <EditorContent editor={editor} className="min-h-full" />
+        </ContextMenuTrigger>
+        <ContextMenuContent
+          // Stop the menu from opening when the right-clicked spot isn't
+          // inside a table — we don't yet have actions for plain text, so
+          // suppressing the menu lets the native browser context menu fire
+          // (the user gets Copy / Paste / Inspect Element).
+          onContextMenu={(e) => {
+            if (!editor?.isActive("table")) {
+              e.preventDefault();
+            }
+          }}
+        >
+          {editor?.isActive("table") ? (
+            <TableContextMenuItems editor={editor} />
+          ) : null}
+        </ContextMenuContent>
+      </ContextMenu>
     </div>
+  );
+}
+
+function TableContextMenuItems({ editor }: { editor: TipTapEditor }) {
+  // Each chain call follows the same shape: focus → mutate → run. Wrapping
+  // in `editor.chain().focus()` ensures the table command operates on the
+  // current selection even if focus drifted to the context menu itself.
+  const run = (fn: () => void) => () => fn();
+  return (
+    <>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger>
+          <Columns size={11} /> Столбцы
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent>
+          <ContextMenuItem
+            onClick={run(() => editor.chain().focus().addColumnBefore().run())}
+          >
+            <ArrowLeft size={11} /> Добавить слева
+          </ContextMenuItem>
+          <ContextMenuItem
+            onClick={run(() => editor.chain().focus().addColumnAfter().run())}
+          >
+            <ArrowRight size={11} /> Добавить справа
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            className="text-danger"
+            onClick={run(() => editor.chain().focus().deleteColumn().run())}
+          >
+            <Columns size={11} /> Удалить столбец
+          </ContextMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+
+      <ContextMenuSub>
+        <ContextMenuSubTrigger>
+          <Rows size={11} /> Строки
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent>
+          <ContextMenuItem
+            onClick={run(() => editor.chain().focus().addRowBefore().run())}
+          >
+            <ArrowUpIcon size={11} /> Добавить выше
+          </ContextMenuItem>
+          <ContextMenuItem
+            onClick={run(() => editor.chain().focus().addRowAfter().run())}
+          >
+            <ArrowDownIcon size={11} /> Добавить ниже
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            className="text-danger"
+            onClick={run(() => editor.chain().focus().deleteRow().run())}
+          >
+            <Rows size={11} /> Удалить строку
+          </ContextMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+
+      <ContextMenuSeparator />
+
+      <ContextMenuItem
+        onClick={run(() => editor.chain().focus().mergeCells().run())}
+        disabled={!editor.can().mergeCells()}
+      >
+        <Merge size={11} /> Объединить ячейки
+      </ContextMenuItem>
+      <ContextMenuItem
+        onClick={run(() => editor.chain().focus().splitCell().run())}
+        disabled={!editor.can().splitCell()}
+      >
+        <Split size={11} /> Разделить ячейку
+      </ContextMenuItem>
+
+      <ContextMenuSeparator />
+
+      <ContextMenuItem
+        onClick={run(() => editor.chain().focus().toggleHeaderRow().run())}
+      >
+        Заголовок строки
+      </ContextMenuItem>
+      <ContextMenuItem
+        onClick={run(() => editor.chain().focus().toggleHeaderColumn().run())}
+      >
+        Заголовок столбца
+      </ContextMenuItem>
+
+      <ContextMenuSeparator />
+
+      <ContextMenuItem
+        className="text-danger"
+        onClick={run(() => editor.chain().focus().deleteTable().run())}
+      >
+        Удалить таблицу
+      </ContextMenuItem>
+    </>
   );
 }
 

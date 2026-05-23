@@ -711,7 +711,7 @@ pub struct GitConfig {
     pub author_email: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GitResult {
     pub success: bool,
     pub stdout: String,
@@ -727,6 +727,82 @@ fn embed_token(url: &str, token: &str) -> String {
         return format!("https://x-access-token:{token}@{rest}");
     }
     url.to_string()
+}
+
+/// After a `-X theirs` merge leaves modify/delete conflicts unresolved,
+/// reconcile them in favour of the **local user's intent** rather than
+/// remote's stale content:
+///   - DU (we deleted, they modified) → confirm the delete with `git rm`.
+///     The user clicked delete in the app; resurrecting the remote copy
+///     would be the bug, not the feature.
+///   - UD (we modified, they deleted) → keep our modification via `git add`.
+///     The user's local edit is the freshest signal we have.
+/// Real content conflicts (UU, AA, AU, UA, DD) bail — those need human
+/// input and we don't want to silently pick a side.
+///
+/// Returns `Some(commit_result)` on attempted auto-resolution (whether the
+/// final `git commit --no-edit` succeeded or not). `None` means there's
+/// nothing here to auto-resolve and the caller should keep the existing
+/// failure mode.
+fn try_resolve_modify_delete(cwd: &std::path::Path) -> Option<GitResult> {
+    let status = run_git(&["status", "--porcelain", "-z"], cwd);
+    if !status.success {
+        return None;
+    }
+    let mut du: Vec<String> = Vec::new();
+    let mut ud: Vec<String> = Vec::new();
+    let mut other_conflict = false;
+    for entry in status.stdout.split('\0').filter(|s| !s.is_empty()) {
+        if entry.len() < 3 {
+            continue;
+        }
+        let code = &entry[..2];
+        let path = entry[3..].to_string();
+        match code {
+            "DU" => du.push(path),
+            "UD" => ud.push(path),
+            "UU" | "AA" | "AU" | "UA" | "DD" => other_conflict = true,
+            _ => {}
+        }
+    }
+    if other_conflict {
+        // Don't paper over a real conflict.
+        return None;
+    }
+    if du.is_empty() && ud.is_empty() {
+        return None;
+    }
+    for p in &du {
+        let _ = run_git(&["rm", "--", p], cwd);
+    }
+    for p in &ud {
+        let _ = run_git(&["add", "--", p], cwd);
+    }
+    let mut summary = String::new();
+    if !du.is_empty() {
+        summary.push_str(&format!("  confirmed deletes ({}):\n", du.len()));
+        for p in &du {
+            summary.push_str(&format!("    - {p}\n"));
+        }
+    }
+    if !ud.is_empty() {
+        summary.push_str(&format!("  kept local modifications ({}):\n", ud.len()));
+        for p in &ud {
+            summary.push_str(&format!("    - {p}\n"));
+        }
+    }
+    let commit = run_git(
+        &[
+            "commit",
+            "--no-edit",
+            "-m",
+            "CoffeeStation sync: auto-resolved modify/delete (local intent)",
+        ],
+        cwd,
+    );
+    let mut out = commit.clone();
+    out.stdout.insert_str(0, &summary);
+    Some(out)
 }
 
 fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
@@ -965,6 +1041,25 @@ async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
             ],
             &path,
         );
+    }
+
+    // 6. Modify/delete conflicts. `-X theirs` does NOT resolve these
+    //    (there's no second version to merge), so the merge stays half-done
+    //    with paths in DU or UD state. The user's *intent* on this device
+    //    is the source of truth: if WE deleted a note in the app, that
+    //    delete must win — keeping the remote's modified copy would
+    //    "undelete" notes that the user explicitly trashed.
+    if !res.success {
+        if let Some(auto) = try_resolve_modify_delete(&path) {
+            res.stdout.push_str("\n[auto-resolve] reconciled modify/delete:\n");
+            res.stdout.push_str(&auto.stdout);
+            if auto.success {
+                res.success = true;
+                res.stderr.clear();
+            } else {
+                res.stderr.push_str(&auto.stderr);
+            }
+        }
     }
 
     if !res.success {

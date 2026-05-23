@@ -1,0 +1,465 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+@import "reactflow/dist/style.css";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elev-1: var(--bg-elev-1);
+  --color-bg-elev-2: var(--bg-elev-2);
+  --color-bg-elev-3: var(--bg-elev-3);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-serif: "Iowan Old Style", "Charter", "Georgia", ui-serif, serif;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+:root {
+  --bg: oklch(99% 0.003 250);
+  --bg-elev-1: oklch(97.5% 0.005 250);
+  --bg-elev-2: oklch(95% 0.006 250);
+  --bg-elev-3: oklch(92% 0.008 250);
+  --fg: oklch(18% 0.01 250);
+  --fg-muted: oklch(45% 0.012 250);
+  --fg-subtle: oklch(62% 0.012 250);
+  --border: oklch(90% 0.008 250);
+  --border-strong: oklch(82% 0.012 250);
+  --accent: oklch(58% 0.18 32);
+  --accent-fg: oklch(99% 0.002 250);
+  --accent-soft: oklch(94% 0.04 32);
+  --danger: oklch(58% 0.21 25);
+  --success: oklch(58% 0.16 150);
+  --warning: oklch(72% 0.16 75);
+}
+
+.dark {
+  --bg: oklch(15% 0.008 260);
+  --bg-elev-1: oklch(18% 0.01 260);
+  --bg-elev-2: oklch(22% 0.012 260);
+  --bg-elev-3: oklch(26% 0.014 260);
+  --fg: oklch(96% 0.005 250);
+  --fg-muted: oklch(74% 0.01 250);
+  --fg-subtle: oklch(56% 0.012 250);
+  --border: oklch(28% 0.012 260);
+  --border-strong: oklch(36% 0.016 260);
+  --accent: oklch(72% 0.18 32);
+  --accent-fg: oklch(15% 0.008 260);
+  --accent-soft: oklch(28% 0.06 32);
+  --danger: oklch(68% 0.20 25);
+  --success: oklch(72% 0.15 150);
+  --warning: oklch(78% 0.16 75);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  overflow: hidden;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-subtle);
+}
+
+.ProseMirror {
+  outline: none;
+  min-height: 100%;
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--fg);
+  caret-color: var(--accent);
+}
+
+.ProseMirror > * + * {
+  margin-top: 0.85em;
+}
+
+.ProseMirror h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 1.4em;
+  font-family: var(--font-serif);
+}
+.ProseMirror h2 {
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 1.3em;
+  font-family: var(--font-serif);
+}
+.ProseMirror h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 1.2em;
+}
+
+.ProseMirror ul,
+.ProseMirror ol {
+  padding-left: 1.4rem;
+}
+.ProseMirror ul { list-style: disc; }
+.ProseMirror ol { list-style: decimal; }
+
+.ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+  margin-left: 0;
+}
+.ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 2px 0;
+}
+.ProseMirror ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 0.45em;
+  user-select: none;
+  display: inline-flex;
+}
+.ProseMirror ul[data-type="taskList"] li > label > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elev-1);
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: all 0.15s ease;
+}
+.ProseMirror ul[data-type="taskList"] li > label > input[type="checkbox"]:hover {
+  border-color: var(--accent);
+}
+.ProseMirror ul[data-type="taskList"] li > label > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ProseMirror ul[data-type="taskList"] li > label > input[type="checkbox"]:checked::before {
+  content: "✓";
+  color: var(--accent-fg);
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 1;
+}
+.ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ProseMirror ul[data-type="taskList"] li > div > p {
+  margin: 0;
+  line-height: 1.6;
+}
+.ProseMirror ul[data-type="taskList"] li[data-checked="true"] > div > p {
+  color: var(--fg-subtle);
+  text-decoration: line-through;
+}
+
+/* Outline jump highlight */
+.outline-jump {
+  background: var(--accent-soft) !important;
+  border-radius: 6px;
+  transition: background 0.6s ease;
+  scroll-margin-top: 2rem;
+}
+
+/* Media block (video/audio/pdf embeds) */
+.ProseMirror .media-block {
+  margin: 1.2em 0;
+  position: relative;
+}
+.ProseMirror .media-block video,
+.ProseMirror .media-block audio,
+.ProseMirror .media-block iframe {
+  display: block;
+  max-width: 100%;
+}
+.ProseMirror .media-block .media-download {
+  display: inline-block;
+  margin-top: 0.5em;
+  color: var(--accent);
+  font-size: 0.875em;
+  text-decoration: none;
+}
+.ProseMirror .media-block .media-download:hover {
+  text-decoration: underline;
+}
+.ProseMirror .media-block.ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+
+.ProseMirror blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+.ProseMirror code {
+  background: var(--bg-elev-2);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.ProseMirror pre {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.ProseMirror pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.ProseMirror table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+}
+.ProseMirror th, .ProseMirror td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+.ProseMirror th {
+  background: var(--bg-elev-2);
+  font-weight: 600;
+}
+
+.ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2rem 0;
+}
+
+.ProseMirror .wiki-link {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+  font-weight: 500;
+}
+.ProseMirror .wiki-link.broken {
+  color: var(--danger);
+  border-bottom-color: var(--danger);
+  border-bottom-style: dotted;
+}
+.ProseMirror .hashtag {
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-size: 0.875em;
+  font-weight: 500;
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  color: var(--fg-subtle);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.ProseMirror mark {
+  background: oklch(94% 0.12 95);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+.dark .ProseMirror mark {
+  background: oklch(45% 0.12 95);
+  color: var(--fg);
+}
+
+.editor-surface {
+  background:
+    radial-gradient(ellipse at top, var(--bg-elev-1), transparent 60%),
+    var(--bg);
+}
+
+.react-flow__attribution { display: none !important; }
+.react-flow__node { font-family: var(--font-sans); }
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--fg-muted);
+  user-select: none;
+}
+.tree-row:hover {
+  background: var(--bg-elev-2);
+  color: var(--fg);
+}
+.tree-row.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fade-up 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.mermaid svg { max-width: 100%; }
+
+[cmdk-root] {
+  background: var(--bg-elev-1);
+  border-radius: 12px;
+  overflow: hidden;
+}
+[cmdk-input] {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 14px 18px;
+  font-size: 15px;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+[cmdk-item] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: var(--fg);
+  border-radius: 6px;
+  margin: 2px 6px;
+}
+[cmdk-item][data-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+[cmdk-group-heading] {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-subtle);
+}
+
+/* ─────────── Liquid Glass mode ─────────── */
+body.liquid-glass {
+  background-attachment: fixed;
+  background-size: 200% 200%;
+  animation: liquid-shimmer 24s ease infinite;
+}
+
+@keyframes liquid-shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+body.liquid-glass aside,
+body.liquid-glass .lg-panel,
+body.liquid-glass [data-tauri-drag-region],
+body.liquid-glass header.border-b,
+body.liquid-glass .editor-surface,
+body.liquid-glass [cmdk-root],
+body.liquid-glass [role="menu"],
+body.liquid-glass [role="dialog"] {
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+
+body.liquid-glass .tree-row.active,
+body.liquid-glass button[class*="accent"] {
+  box-shadow: 0 6px 24px -8px rgb(255 112 166 / 0.4),
+              inset 0 1px 0 0 rgb(255 255 255 / 0.2);
+}
+
+body.liquid-glass aside {
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+body.liquid-glass .ProseMirror h1,
+body.liquid-glass .ProseMirror h2 {
+  background-clip: text;
+  -webkit-background-clip: text;
+  background-image: linear-gradient(135deg, var(--accent), oklch(75% 0.2 280));
+  color: transparent;
+  letter-spacing: -0.025em;
+}
+
+body.liquid-glass button,
+body.liquid-glass input,
+body.liquid-glass select,
+body.liquid-glass textarea,
+body.liquid-glass [cmdk-input] {
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+}
+
+body.liquid-glass .react-flow__node,
+body.liquid-glass .react-flow__minimap {
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-color: rgba(255,255,255,0.15) !important;
+}
+

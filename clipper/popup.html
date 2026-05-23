@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>CoffeeStation Clipper</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; width: 280px; margin: 0; padding: 14px; background: #fafafa; }
+      h1 { font-size: 14px; margin: 0 0 8px 0; display: flex; align-items: center; gap: 6px; }
+      .logo { width: 18px; height: 18px; background: #f97316; border-radius: 4px; display: inline-block; }
+      button { width: 100%; padding: 8px 12px; margin: 4px 0; border: 0; border-radius: 6px; background: #f97316; color: white; font-weight: 500; cursor: pointer; }
+      button.secondary { background: #e4e4e7; color: #18181b; }
+      .hint { font-size: 11px; color: #71717a; margin-top: 8px; line-height: 1.5; }
+      a { color: #f97316; }
+    </style>
+  </head>
+  <body>
+    <h1><span class="logo"></span> CoffeeStation</h1>
+    <button id="clip-page">Сохранить страницу</button>
+    <button id="clip-selection" class="secondary">Сохранить выделение</button>
+    <p class="hint">
+      Endpoint: <span id="endpoint"></span><br>
+      <a href="options.html" target="_blank">Настроить →</a>
+    </p>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>CoffeeStation Clipper · Settings</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 24px; background: #fafafa; color: #18181b; }
+      h1 { font-size: 18px; }
+      label { display: block; margin: 18px 0 6px; font-size: 13px; font-weight: 500; }
+      input { width: 100%; padding: 8px 10px; border: 1px solid #e4e4e7; border-radius: 6px; font-size: 13px; }
+      button { margin-top: 16px; padding: 8px 16px; background: #f97316; color: white; border: 0; border-radius: 6px; font-weight: 500; cursor: pointer; }
+      .saved { color: #10b981; font-size: 12px; margin-left: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>☕ CoffeeStation Clipper — настройки</h1>
+    <label for="endpoint">Endpoint вашего CoffeeStation</label>
+    <input id="endpoint" placeholder="http://localhost:3000" />
+    <p style="color: #71717a; font-size: 12px; margin-top: 8px;">
+      Расширение отправляет клипы в <code>{endpoint}/api/clip</code>. <br>
+      Веб-приложение CoffeeStation подхватывает их из очереди при следующем фокусе.
+    </p>
+    <button id="save">Сохранить</button>
+    <span class="saved" id="saved" hidden>✓ сохранено</span>
+    <script src="options.js"></script>
+  </body>
+</html>

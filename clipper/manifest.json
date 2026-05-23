@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "CoffeeStation Web Clipper",
+  "version": "0.1.0",
+  "description": "Сохраняйте веб-страницы, выделения и PDF прямо в CoffeeStation.",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Сохранить в CoffeeStation",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "options_page": "options.html",
+  "commands": {
+    "clip-page": {
+      "suggested_key": { "default": "Ctrl+Shift+S", "mac": "Command+Shift+S" },
+      "description": "Сохранить страницу целиком"
+    },
+    "clip-selection": {
+      "suggested_key": { "default": "Ctrl+Shift+X", "mac": "Command+Shift+X" },
+      "description": "Сохранить выделенный фрагмент"
+    }
+  },
+  "icons": {
+    "128": "icon.png"
+  }
+}

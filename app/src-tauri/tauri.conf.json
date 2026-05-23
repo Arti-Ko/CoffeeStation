@@ -1,0 +1,72 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "CoffeeStation",
+  "version": "0.1.0",
+  "identifier": "app.coffeestation.desktop",
+  "build": {
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "pnpm dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "CoffeeStation",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "shadow": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 16, "y": 18 },
+        "acceptFirstMouse": true,
+        "dragDropEnabled": false,
+        "backgroundColor": "#0f1115"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "nsis", "msi"],
+    "category": "Productivity",
+    "shortDescription": "Local-first PKM with knowledge graph and E2EE sync",
+    "longDescription": "CoffeeStation — a cross-platform local-first PKM that mixes the best of Obsidian and Notion: native desktop speed, Markdown on disk, knowledge graph, kanban, file vault with inline viewers, GitHub sync over end-to-end encryption.",
+    "copyright": "© 2026 Arti-Ko",
+    "publisher": "Arti-Ko",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "wix": {
+        "language": ["en-US", "ru-RU"]
+      },
+      "nsis": {
+        "displayLanguageSelector": true,
+        "languages": ["English", "Russian"],
+        "installMode": "perMachine",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  }
+}

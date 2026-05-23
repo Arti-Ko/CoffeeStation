@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, usePanelRef, type PanelImperativeHandle } from "react-resizable-panels";
-import { Sidebar } from "@/components/shell/Sidebar";
+import { Sidebar, SidebarCollapsedRail } from "@/components/shell/Sidebar";
 import { FilesPanel, FilesPanelCollapsedStrip } from "@/components/shell/FilesPanel";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { KnowledgeBaseView } from "@/components/views/KnowledgeBaseView";
@@ -146,7 +146,11 @@ export function Shell() {
               setSidebarNarrow(px < 80);
             }}
           >
-            <Sidebar collapsed={sidebarNarrow || sidebarCollapsed} />
+            {(sidebarNarrow || sidebarCollapsed) ? (
+              <SidebarCollapsedRail />
+            ) : (
+              <Sidebar />
+            )}
           </Panel>
         </Group>
         <CommandPalette />

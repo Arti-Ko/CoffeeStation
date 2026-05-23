@@ -50,16 +50,28 @@ export const NAV_ITEMS: {
   { key: "theme-studio", Icon: Palette, labelKey: "nav.theme", fallbackLabel: "Theme Studio", match: (k) => k === "theme-studio", go: () => useApp.getState().setView({ kind: "theme-studio" }) },
 ];
 
-export function Sidebar({ collapsed }: { collapsed?: boolean } = {}) {
-  const { sidebarCollapsed, toggleSidebar, view, setView, setCommandPaletteOpen } = useApp();
-  const isCollapsed = collapsed ?? sidebarCollapsed;
+/**
+ * Tiny vertical rail with section-switch icons, shown when the right panel
+ * is collapsed. Lives as its own export so the parent `<Panel>` swaps a
+ * full subtree (rail vs expanded) on collapse — react-resizable-panels
+ * then animates the width cleanly, exactly like the left FilesPanel does.
+ *
+ * (Earlier we passed `collapsed` as a prop into `Sidebar` itself and did an
+ * internal early-return. Same `<Sidebar>` element kept rendering across the
+ * collapse transition, so the Panel's expand-to-most-recent-size logic
+ * didn't always restore the previous width.)
+ */
+export function SidebarCollapsedRail() {
+  const toggleSidebar = useApp((s) => s.toggleSidebar);
+  const [tab, setTab] = useState<SidebarTab>("outline");
+  return <CollapsedRail tab={tab} setTab={setTab} onExpand={toggleSidebar} />;
+}
+
+export function Sidebar() {
+  const { toggleSidebar, view, setCommandPaletteOpen } = useApp();
   const t = useT();
   const [tab, setTab] = useState<SidebarTab>("outline");
   const isNote = view.kind === "note";
-
-  if (isCollapsed) {
-    return <CollapsedRail tab={tab} setTab={setTab} onExpand={toggleSidebar} />;
-  }
 
   return (
     <aside className="flex h-full w-full shrink-0 flex-col border-l border-border bg-bg-elev-1">

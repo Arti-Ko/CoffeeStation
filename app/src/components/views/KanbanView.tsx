@@ -21,7 +21,16 @@ import {
   type DragOverEvent,
   useDroppable,
   useDraggable,
+  closestCenter,
 } from "@dnd-kit/core";
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 
 /**
  * Kanban board view powered by @dnd-kit (more reliable than HTML5 native DnD
@@ -121,14 +130,32 @@ export function KanbanView() {
 
   const onDragEnd = async (e: DragEndEvent) => {
     setActiveId(null);
-    const cardId = String(e.active.id);
+    const activeId = String(e.active.id);
     const overId = e.over ? String(e.over.id) : null;
     if (!overId) return;
 
+    // ── Column reorder branch ────────────────────────────────────────
+    // Sortable column IDs are prefixed "colsort:" so we can tell them
+    // apart from card drags + card drop zones.
+    if (activeId.startsWith("colsort:")) {
+      if (!overId.startsWith("colsort:")) return;
+      const fromId = activeId.slice("colsort:".length);
+      const toId = overId.slice("colsort:".length);
+      if (fromId === toId) return;
+      const fromIdx = columns.findIndex((c) => c.id === fromId);
+      const toIdx = columns.findIndex((c) => c.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return;
+      const next = arrayMove(columns, fromIdx, toIdx);
+      await db.kanbanColumns.bulkUpdate(
+        next.map((col, i) => ({ key: col.id, changes: { order: i } })),
+      );
+      return;
+    }
+
+    // ── Card move branch ─────────────────────────────────────────────
+    const cardId = activeId;
     const card = cards.find((c) => c.id === cardId);
     if (!card) return;
-
-    // Drop targets are columns — over.id will be the column id, prefixed "col:"
     const targetColumnId = overId.startsWith("col:") ? overId.slice(4) : null;
     if (!targetColumnId || targetColumnId === card.columnId) return;
 
@@ -142,14 +169,14 @@ export function KanbanView() {
       movedAt: Date.now(),
     });
 
-    // Auto-archive if dropped on done column with previous day's date
     if (targetCol.done && card.dayCreated < todayStr) {
       await db.kanbanCards.update(cardId, { archivedAt: Date.now() });
     }
   };
 
   const onDragOver = (_e: DragOverEvent) => {
-    // Visual feedback only — actual reordering happens on drag end
+    // Visual feedback handled by SortableContext itself; card-move drop
+    // targets get their `isOver` flag from useDroppable.
   };
 
   const carryOverCount = cards.filter(
@@ -182,58 +209,60 @@ export function KanbanView() {
 
       <DndContext
         sensors={sensors}
+        collisionDetection={closestCenter}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
         onDragOver={onDragOver}
         onDragCancel={() => setActiveId(null)}
       >
-        <div className="flex flex-1 gap-3 overflow-x-auto p-4">
-          {columns.map((col) => {
-            const colCards = cards.filter((c) => c.columnId === col.id);
-            return (
-              <ColumnView
-                key={col.id}
-                column={col}
-                cards={colCards}
-                addCard={() => addCard(col.id)}
-                deleteCard={deleteCard}
-                renameColumn={renameColumn}
-                deleteColumn={() => deleteColumn(col)}
-                toggleDoneFlag={() => toggleDoneFlag(col)}
-                todayStr={todayStr}
-              />
-            );
-          })}
-          {addingColumn ? (
-            <div className="flex w-72 shrink-0 flex-col gap-2 rounded-xl border-2 border-accent bg-bg-elev-1 p-3">
-              <Input
-                autoFocus
-                value={newColumnName}
-                onChange={(e) => setNewColumnName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addColumn();
-                  if (e.key === "Escape") { setAddingColumn(false); setNewColumnName(""); }
-                }}
-                placeholder="Имя колонки…"
-              />
-              <div className="flex gap-1">
-                <Button size="sm" variant="default" onClick={addColumn} className="flex-1">
-                  <Plus size={12} /> Добавить
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => { setAddingColumn(false); setNewColumnName(""); }}>
-                  Отмена
-                </Button>
+        <SortableContext
+          items={columns.map((c) => "colsort:" + c.id)}
+          strategy={horizontalListSortingStrategy}
+        >
+          {/* Columns stretch to fill the board horizontally — like a real
+              kanban surface, not a fixed-width scroll-strip. min-w keeps
+              individual columns readable even when there are many. */}
+          <div className="flex flex-1 gap-3 p-4 min-h-0">
+            {columns.map((col) => {
+              const colCards = cards.filter((c) => c.columnId === col.id);
+              return (
+                <ColumnView
+                  key={col.id}
+                  column={col}
+                  cards={colCards}
+                  addCard={() => addCard(col.id)}
+                  deleteCard={deleteCard}
+                  renameColumn={renameColumn}
+                  deleteColumn={() => deleteColumn(col)}
+                  toggleDoneFlag={() => toggleDoneFlag(col)}
+                  todayStr={todayStr}
+                />
+              );
+            })}
+            {addingColumn && (
+              <div className="flex w-72 shrink-0 flex-col gap-2 rounded-xl border-2 border-accent bg-bg-elev-1 p-3">
+                <Input
+                  autoFocus
+                  value={newColumnName}
+                  onChange={(e) => setNewColumnName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addColumn();
+                    if (e.key === "Escape") { setAddingColumn(false); setNewColumnName(""); }
+                  }}
+                  placeholder="Имя колонки…"
+                />
+                <div className="flex gap-1">
+                  <Button size="sm" variant="default" onClick={addColumn} className="flex-1">
+                    <Plus size={12} /> Добавить
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => { setAddingColumn(false); setNewColumnName(""); }}>
+                    Отмена
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => setAddingColumn(true)}
-              className="flex w-72 shrink-0 items-center justify-center rounded-xl border-2 border-dashed border-border text-sm text-fg-subtle hover:border-accent hover:text-fg transition-colors"
-            >
-              <Plus size={14} /> Колонка
-            </button>
-          )}
-        </div>
+            )}
+          </div>
+        </SortableContext>
 
         <DragOverlay>
           {activeCard && (
@@ -264,7 +293,18 @@ function ColumnView({
   toggleDoneFlag: () => void;
   todayStr: string;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: "col:" + column.id });
+  // Column is both:
+  //   - sortable (its own id used by the column-reorder branch)
+  //   - droppable for cards (the inner area accepts card drops)
+  const {
+    attributes,
+    listeners,
+    setNodeRef: setSortRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: "colsort:" + column.id });
+  const { setNodeRef: setDropRef, isOver } = useDroppable({ id: "col:" + column.id });
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(column.name);
 
@@ -274,16 +314,35 @@ function ColumnView({
     else setName(column.name);
   };
 
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
   return (
     <div
-      ref={setNodeRef}
+      ref={setSortRef}
+      style={style}
       className={cn(
-        "flex w-72 shrink-0 flex-col rounded-xl border bg-bg-elev-1 transition-colors",
+        // flex-1 spreads columns evenly across the board, min-w keeps them
+        // readable on dense boards. basis-0 + flex-1 = equal-share columns.
+        "flex flex-1 basis-0 min-w-[180px] flex-col rounded-xl border bg-bg-elev-1 transition-colors",
         isOver ? "border-accent ring-2 ring-accent/30" : "border-border",
+        isDragging && "opacity-50 ring-2 ring-accent/50",
       )}
     >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      {/* Header doubles as the column drag handle. Click-to-rename works
+          because dnd-kit's PointerSensor needs 6px movement before drag. */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="flex items-center justify-between border-b border-border px-3 py-2 cursor-grab active:cursor-grabbing"
+      >
         <div className="flex items-center gap-2 flex-1 min-w-0">
+          <GripVertical
+            size={12}
+            className="text-fg-subtle opacity-0 group-hover/col:opacity-100 transition-opacity shrink-0"
+          />
           <span className="h-2 w-2 rounded-full shrink-0" style={{ background: column.color }} />
           {editing ? (
             <Input
@@ -296,35 +355,50 @@ function ColumnView({
                 if (e.key === "Escape") { setName(column.name); setEditing(false); }
               }}
               className="h-6 text-[13px]"
+              onPointerDown={(e) => e.stopPropagation()}
             />
           ) : (
-            <button onDoubleClick={() => setEditing(true)} className="text-[13px] font-semibold truncate flex-1 text-left">
+            <button
+              onDoubleClick={() => setEditing(true)}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="text-[13px] font-semibold truncate flex-1 text-left"
+            >
               {column.name}
             </button>
           )}
           <span className="text-[11px] text-fg-subtle shrink-0">{cards.length}</span>
           {column.done && <Check size={11} className="text-success shrink-0" />}
         </div>
-        <Menu>
-          <MenuTrigger asChild>
-            <Button size="icon-sm" variant="ghost">
-              <MoreHorizontal size={13} />
-            </Button>
-          </MenuTrigger>
-          <MenuContent>
-            <MenuItem onClick={() => setEditing(true)}><Pencil size={11} /> Переименовать</MenuItem>
-            <MenuItem onClick={toggleDoneFlag}>
-              <Check size={11} /> {column.done ? "Снять флаг Done" : "Пометить как Done"}
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem className="text-danger" onClick={deleteColumn}><Trash2 size={11} /> Удалить колонку</MenuItem>
-          </MenuContent>
-        </Menu>
+        <div onPointerDown={(e) => e.stopPropagation()}>
+          <Menu>
+            <MenuTrigger asChild>
+              <Button size="icon-sm" variant="ghost">
+                <MoreHorizontal size={13} />
+              </Button>
+            </MenuTrigger>
+            <MenuContent>
+              <MenuItem onClick={() => setEditing(true)}><Pencil size={11} /> Переименовать</MenuItem>
+              <MenuItem onClick={toggleDoneFlag}>
+                <Check size={11} /> {column.done ? "Снять флаг Done" : "Пометить как Done"}
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem className="text-danger" onClick={deleteColumn}><Trash2 size={11} /> Удалить колонку</MenuItem>
+            </MenuContent>
+          </Menu>
+        </div>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto p-2 min-h-[120px]">
+      <div
+        ref={setDropRef}
+        className="flex-1 space-y-2 overflow-y-auto p-2 min-h-[120px]"
+      >
         {cards.map((card) => (
-          <DraggableCard key={card.id} card={card} onDelete={() => deleteCard(card.id)} todayStr={todayStr} />
+          <DraggableCard
+            key={card.id}
+            card={card}
+            onDelete={() => deleteCard(card.id)}
+            todayStr={todayStr}
+          />
         ))}
       </div>
 

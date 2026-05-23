@@ -101,11 +101,16 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing keys for the updater. Without these the build still
-          # succeeds but the updater plugin can't verify subsequent updates.
-          # Add via: Settings → Secrets and variables → Actions.
+          # Updater bundle signing (separate from macOS code signing).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS ad-hoc code signing. `-` means "sign with an ephemeral
+          # certificate"; not trusted by Gatekeeper, but it satisfies the
+          # macOS LaunchServices "is this binary intact?" check that
+          # otherwise produces the "приложение повреждено" rejection. Users
+          # still see the Gatekeeper warning on first launch (right-click →
+          # Open) but the app actually opens.
+          APPLE_SIGNING_IDENTITY: "-"
         with:
           projectPath: app
           tauriScript: pnpm tauri

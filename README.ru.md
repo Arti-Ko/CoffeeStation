@@ -100,9 +100,14 @@
 ## Установка
 
 ### macOS
-1. Скачай последний `CoffeeStation_<версия>_aarch64.dmg` из [Releases](https://github.com/Arti-Ko/coffeestation_lite/releases)
+1. Скачай последний `CoffeeStation_<версия>_aarch64.dmg` из [Releases](https://github.com/Arti-Ko/CoffeeStation/releases)
 2. Открой DMG, перетащи CoffeeStation в `/Applications`
 3. Первый запуск: правый клик → Открыть (билд неподписанный, Gatekeeper предупредит один раз)
+
+> **«Приложение повреждено и не может быть открыто»** — macOS вешает quarantine-атрибут на всё скачанное из браузера, а у нас бесплатная ad-hoc подпись (без покупки Apple Developer ID за $99/год). Снимай атрибут одной командой и запускай:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/CoffeeStation.app
+> ```
 
 > Пока только **Apple Silicon**. Intel-сборка (`x86_64-apple-darwin`) — это одна команда rebuild, открой issue если нужна.
 

@@ -100,9 +100,14 @@ It's a single binary. No accounts. No servers. Your vault is a folder.
 ## Install
 
 ### macOS
-1. Grab the latest `CoffeeStation_<version>_aarch64.dmg` from [Releases](https://github.com/Arti-Ko/coffeestation_lite/releases)
+1. Grab the latest `CoffeeStation_<version>_aarch64.dmg` from [Releases](https://github.com/Arti-Ko/CoffeeStation/releases)
 2. Open the DMG, drag CoffeeStation to `/Applications`
 3. First launch: right-click → Open (unsigned build, macOS Gatekeeper will warn once)
+
+> **«Приложение повреждено и не может быть открыто»** — macOS вешает quarantine-атрибут на всё скачанное из браузера, а у нас бесплатная ad-hoc подпись (без покупки Apple Developer ID за $99/год). Снимай атрибут одной командой и запускай:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/CoffeeStation.app
+> ```
 
 > **Apple Silicon** only for now. Intel build (`x86_64-apple-darwin`) is a one-command rebuild — open an issue if you need one.
 

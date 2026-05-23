@@ -47,6 +47,31 @@ export const DEFAULT_LFS_PATTERNS = [
 
 const KEY = "github.sync";
 
+/**
+ * Single source of truth for the on-disk vault location.
+ *
+ * Historically we had two paths: `paths.vaultRoot` (file mirror / import) and
+ * `cfg.localPath` (git working dir). Users who picked different values for the
+ * two would silently end up with git pulling into one folder while the import
+ * scanned a different one — net result was "Изменения получены, 0 файлов".
+ *
+ * Now `localPath` is *derived* from vaultRoot every read; saving `localPath`
+ * just writes through to vaultRoot. We migrate any stored standalone value
+ * forward on first read so existing installs don't reset to default.
+ */
+async function resolveLocalPath(stored: string | undefined): Promise<string> {
+  const { getVaultPaths, setVaultPaths } = await import("@/lib/desktop/paths");
+  const paths = await getVaultPaths();
+  // Migration: an older install stored localPath in github.sync without
+  // touching fs.paths.vaultRoot. Prefer the one that actually has data —
+  // localPath, since git was pointed there.
+  if (stored && stored !== paths.vaultRoot) {
+    await setVaultPaths({ vaultRoot: stored });
+    return stored;
+  }
+  return paths.vaultRoot ?? "";
+}
+
 export async function getGitHubConfig(): Promise<GitHubConfig> {
   const row = await db.settings.get(KEY);
   if (row?.value) {
@@ -57,7 +82,7 @@ export async function getGitHubConfig(): Promise<GitHubConfig> {
       oauthAvatar: cfg.oauthAvatar,
       repoUrl: cfg.repoUrl ?? "",
       token: cfg.token ?? "",
-      localPath: cfg.localPath ?? "",
+      localPath: await resolveLocalPath(cfg.localPath),
       authorName: cfg.authorName ?? "",
       authorEmail: cfg.authorEmail ?? "",
       autoIdleEnabled: cfg.autoIdleEnabled ?? false,
@@ -76,7 +101,7 @@ export async function getGitHubConfig(): Promise<GitHubConfig> {
     oauthLogin: "",
     repoUrl: "",
     token: "",
-    localPath: "",
+    localPath: await resolveLocalPath(undefined),
     authorName: "",
     authorEmail: "",
     autoIdleEnabled: false,
@@ -90,8 +115,15 @@ export async function getGitHubConfig(): Promise<GitHubConfig> {
 }
 
 export async function saveGitHubConfig(cfg: Partial<GitHubConfig>): Promise<GitHubConfig> {
+  // localPath is derived from vaultRoot, not stored independently. If a caller
+  // passes one in, route it through to fs.paths so both stay aligned.
+  if (cfg.localPath !== undefined) {
+    const { setVaultPaths } = await import("@/lib/desktop/paths");
+    await setVaultPaths({ vaultRoot: cfg.localPath });
+  }
   const current = await getGitHubConfig();
-  const merged = { ...current, ...cfg };
+  const { localPath: _ignored, ...rest } = cfg;
+  const merged = { ...current, ...rest };
   await db.settings.put({ key: KEY, value: merged });
   return merged;
 }
@@ -235,7 +267,7 @@ export async function pullRepo(opts: { silent?: boolean; reason?: string } = {})
         // happened. Previously a 0-note result looked identical to a
         // working import that found nothing new — masking bugs like
         // wrong localPath or a half-finished clone on a fresh device.
-        const importSummary = `[import] scanned ${result.files} file(s), imported ${result.notes}, skipped ${result.skipped}, folders ${result.folders}`;
+        const importSummary = `[import] scanned ${result.files} file(s), imported ${result.notes}, skipped ${result.skipped}, folders ${result.folders}\n[import] path: ${cfg.localPath}`;
         detail = [detail, importSummary].filter(Boolean).join("\n\n").trim();
         if (result.errors.length > 0) {
           detail = [detail, `[import errors]\n  ${result.errors.slice(0, 5).join("\n  ")}`]

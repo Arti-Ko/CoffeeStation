@@ -83,6 +83,14 @@ export function SettingsView() {
   const updatePath = async (key: keyof VaultPaths, value: string | boolean) => {
     const next = await setVaultPaths({ [key]: value } as Partial<VaultPaths>);
     setPaths(next);
+    // vaultRoot is now also the GitHub sync's working dir. The next call to
+    // getGitHubConfig() resolves to the new vaultRoot automatically; we
+    // nudge any mounted GitHubSyncSection to re-fetch via a custom event
+    // so the "Git работает в …" label updates without a navigation away
+    // and back.
+    if (key === "vaultRoot" && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("cs:vault-root-changed", { detail: value }));
+    }
   };
 
   const pickAndSet = async (key: keyof VaultPaths, label: string) => {
@@ -559,6 +567,13 @@ function GitHubSyncSection() {
     getGitHubConfig().then(setCfg);
     isGitAvailable().then(setGitAvailable);
     isLfsAvailable().then(setLfsAvailable);
+    // vaultRoot lives in a sibling component now (Пути к файлам). When it
+    // changes, the derived cfg.localPath here is stale until refetched.
+    const onVaultChange = () => {
+      getGitHubConfig().then(setCfg);
+    };
+    window.addEventListener("cs:vault-root-changed", onVaultChange);
+    return () => window.removeEventListener("cs:vault-root-changed", onVaultChange);
   }, []);
 
   if (!cfg) return null;
@@ -804,47 +819,16 @@ function GitHubSyncSection() {
                 )}
               </div>
 
-              <Row label="Локальная папка">
-                <Input
-                  value={cfg.localPath}
-                  onChange={(e) => setCfg({ ...cfg, localPath: e.target.value })}
-                  onBlur={() => update({ localPath: cfg.localPath })}
-                  className="font-mono text-[11.5px]"
-                />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={async () => {
-                    const p = await (await import("@/lib/desktop/paths")).pickFolder("Git working dir");
-                    if (p) update({ localPath: p });
-                  }}
-                >
-                  <FolderInput size={12} /> Выбрать…
-                </Button>
-              </Row>
-              {cfg.localPath && cfg.localPath.replace(/\/$/, "").endsWith("/_git") && (
-                <div className="rounded-md border border-warning bg-warning/10 px-3 py-2 text-[11.5px] text-fg leading-relaxed">
-                  <div className="font-medium text-warning mb-1">Эта конфигурация устарела</div>
-                  В старых версиях клон уходил в подпапку <code>_git</code> — заметки
-                  и git-репо жили раздельно, поэтому изменения не синхронизировались.
-                  Сейчас git работает прямо в Vault root.
-                  <div className="mt-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={async () => {
-                        const root = (await getVaultPaths()).vaultRoot;
-                        await update({ localPath: root });
-                        toast.success("Локальная папка сброшена на Vault root", {
-                          description: `Перенеси содержимое старой папки _git в ${root} вручную, либо сделай pull заново.`,
-                        });
-                      }}
-                    >
-                      Сбросить на Vault root
-                    </Button>
-                  </div>
-                </div>
-              )}
+              {/*
+                Git working dir is the same as Vault root — change it in the
+                "Пути к файлам" section above. Keeping a separate input here
+                let users set two different paths and silently break sync.
+              */}
+              <div className="rounded-md border border-border bg-bg-elev-0 px-3 py-2 text-[11.5px] text-fg-muted leading-relaxed">
+                Git работает в той же папке, что и Vault root —
+                <code className="font-mono text-fg ml-1">{cfg.localPath || "(не задана)"}</code>.
+                Чтобы сменить — отредактируйте Vault root в разделе «Пути к файлам» выше.
+              </div>
             </>
           )}
 

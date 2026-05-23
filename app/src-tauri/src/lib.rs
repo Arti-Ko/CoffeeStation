@@ -886,51 +886,41 @@ async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
         return Ok(res);
     }
 
-    // 3. Find untracked files that conflict with remote and rename them.
-    let untracked = run_git(&["ls-files", "--others", "--exclude-standard", "-z"], &path);
-    let remote_tree = run_git(&["ls-tree", "-r", "--name-only", "-z", "origin/main"], &path);
-    let mut renamed: Vec<String> = Vec::new();
-    if untracked.success && remote_tree.success {
-        let remote_files: std::collections::HashSet<String> = remote_tree
-            .stdout
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-        let timestamp = chrono_like_now();
-        for f in untracked.stdout.split('\0').filter(|s| !s.is_empty()) {
-            if !remote_files.contains(f) {
-                continue;
-            }
-            let src = path.join(f);
-            let conflict_name = sidecar_name(f, &timestamp);
-            let dst = path.join(&conflict_name);
-            if let Some(parent) = dst.parent() {
-                let _ = tokio::fs::create_dir_all(parent).await;
-            }
-            if tokio::fs::rename(&src, &dst).await.is_ok() {
-                renamed.push(format!("{f} → {conflict_name}"));
-            }
-        }
-    }
+    // 3. Stage and commit any pending local work so the upcoming pull is a
+    //    proper 3-way merge. Without this, untracked files that have the
+    //    same name as remote files cause "would be overwritten by merge"
+    //    even when contents are identical — and our old fallback was to
+    //    blindly rename every such file (the 1761-rename bug). Letting git
+    //    do the content-aware comparison makes identical files a no-op and
+    //    only treats real diffs as conflicts.
+    //
+    //    We need a committer identity to make this work; fall back to
+    //    placeholders for repos that haven't been configured yet.
+    let name = config.author_name.as_deref().unwrap_or("CoffeeStation");
+    let email = config
+        .author_email
+        .as_deref()
+        .unwrap_or("sync@coffeestation.local");
+    let _ = run_git(&["config", "user.name", name], &path);
+    let _ = run_git(&["config", "user.email", email], &path);
+    let _ = run_git(&["add", "-A"], &path);
+    // `git commit` exits non-zero when there's nothing staged — ignore.
+    let _ = run_git(
+        &["commit", "-m", "CoffeeStation sync: pre-pull snapshot"],
+        &path,
+    );
 
-    // 4. Pull. With conflicts moved aside, this should succeed.
-    let mut res = run_git(&["pull", "--rebase", "--autostash", "origin", "main"], &path);
+    // 4. Pull with `-X theirs` (remote wins on real conflicts). The user's
+    //    pre-pull state stays as the previous commit on the local branch,
+    //    so nothing is lost — they can recover with `git reset HEAD~` if
+    //    they ever want to.
+    let mut res = run_git(
+        &["pull", "--no-rebase", "-X", "theirs", "origin", "main"],
+        &path,
+    );
 
-    // 5. If rebase failed, try a merge with `-X theirs`. Local untracked
-    //    conflicts are already renamed (step 3); tracked files keep history.
-    if !res.success {
-        let _ = run_git(&["rebase", "--abort"], &path);
-        res = run_git(
-            &["pull", "--no-rebase", "-X", "theirs", "origin", "main"],
-            &path,
-        );
-    }
-
-    // 6. Unrelated histories: this happens when the local repo was `git init`-ed
-    //    locally (the fallback path in git_init_or_clone) and the remote was
-    //    created independently. Retry with --allow-unrelated-histories so the
-    //    two roots get stitched together via one merge commit.
+    // 5. Unrelated histories fallback (local was `git init`-ed independently
+    //    from the remote that already had history).
     if !res.success && res.stderr.contains("refusing to merge unrelated histories") {
         let _ = run_git(&["merge", "--abort"], &path);
         res = run_git(
@@ -949,12 +939,6 @@ async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
 
     if !res.success {
         let _ = run_git(&["merge", "--abort"], &path);
-    }
-
-    if !renamed.is_empty() {
-        let suffix = format!("\n[safe-pull] renamed {} conflicting file(s):\n  {}",
-            renamed.len(), renamed.join("\n  "));
-        res.stdout.push_str(&suffix);
     }
 
     let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);

@@ -173,18 +173,38 @@ export async function initRepo(): Promise<SyncResult> {
   };
 }
 
-export async function pullRepo(opts: { silent?: boolean } = {}): Promise<SyncResult> {
+export async function pullRepo(_opts: { silent?: boolean } = {}): Promise<SyncResult> {
   if (!isDesktop()) return { ok: false, added: 0, message: "Только на десктопе" };
   const cfg = await getGitHubConfig();
   if (!cfg.repoUrl || !cfg.token || !cfg.localPath) {
     return { ok: false, added: 0, message: "GitHub не настроен" };
   }
   const res = await invoke<GitResult>("git_pull", { config: await rustConfig(cfg) });
+
+  // git puts files on disk; the app reads from IndexedDB. Without this
+  // step, a successful pull leaves the user staring at an unchanged
+  // sidebar wondering where their notes went. Import scans the local
+  // path and upserts every .md/.markdown/.txt into Dexie.
+  let imported = 0;
+  if (res.success) {
+    try {
+      const { importVaultFromFolder } = await import("@/lib/desktop/import");
+      const result = await importVaultFromFolder(cfg.localPath);
+      imported = result.notes;
+    } catch (e) {
+      console.debug("[pull] vault import failed:", e);
+    }
+  }
+
   await saveGitHubConfig({ lastSyncedAt: Date.now(), lastError: res.success ? undefined : res.stderr });
   return {
     ok: res.success,
-    added: 0,
-    message: res.success ? "Изменения получены" : "Pull не удался",
+    added: imported,
+    message: res.success
+      ? imported > 0
+        ? `Получено и импортировано: ${imported} заметок`
+        : "Изменения получены"
+      : "Pull не удался",
     detail: res.stdout || res.stderr,
   };
 }

@@ -596,12 +596,12 @@ function GitHubSyncSection() {
         return;
       }
       const user = await fetchUser(token);
-      // Pick a default working dir
+      // Default the git working tree to the vault root itself. Putting `.git`
+      // *inside* the vault means git tracks the same `.md` files that the
+      // editor auto-mirrors — no parallel "_git" subfolder. Old configs that
+      // still point at `<root>/_git` keep working, they're just deprecated.
       const paths = await getVaultPaths();
-      const localPath =
-        cfg.localPath ||
-        `${paths.vaultRoot.replace(/\/$/, "") || ""}/_git` ||
-        "";
+      const localPath = cfg.localPath || paths.vaultRoot || "";
       await update({
         token,
         oauthLogin: user.login,
@@ -626,9 +626,7 @@ function GitHubSyncSection() {
     try {
       const user = await fetchUser(cfg.token);
       const paths = await getVaultPaths();
-      const localPath =
-        cfg.localPath ||
-        `${paths.vaultRoot.replace(/\/$/, "")}/_git`.replace(/\/_git\/_git$/, "/_git");
+      const localPath = cfg.localPath || paths.vaultRoot || "";
       const res = await autoOnboard({
         token: cfg.token,
         repoName: repoName.trim() || "coffeestation-vault",
@@ -819,6 +817,29 @@ function GitHubSyncSection() {
                   <FolderInput size={12} /> Выбрать…
                 </Button>
               </Row>
+              {cfg.localPath && cfg.localPath.replace(/\/$/, "").endsWith("/_git") && (
+                <div className="rounded-md border border-warning bg-warning/10 px-3 py-2 text-[11.5px] text-fg leading-relaxed">
+                  <div className="font-medium text-warning mb-1">Эта конфигурация устарела</div>
+                  В старых версиях клон уходил в подпапку <code>_git</code> — заметки
+                  и git-репо жили раздельно, поэтому изменения не синхронизировались.
+                  Сейчас git работает прямо в Vault root.
+                  <div className="mt-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={async () => {
+                        const root = (await getVaultPaths()).vaultRoot;
+                        await update({ localPath: root });
+                        toast.success("Локальная папка сброшена на Vault root", {
+                          description: `Перенеси содержимое старой папки _git в ${root} вручную, либо сделай pull заново.`,
+                        });
+                      }}
+                    >
+                      Сбросить на Vault root
+                    </Button>
+                  </div>
+                </div>
+              )}
             </>
           )}
 

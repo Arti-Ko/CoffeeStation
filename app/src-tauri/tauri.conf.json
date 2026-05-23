@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "CoffeeStation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.coffeestation.desktop",
   "build": {
     "frontendDist": "../out",
@@ -38,6 +38,16 @@
       }
     },
     "macOSPrivateApi": true
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2QUMxRjQxREYwN0E0RTYKUldUbXBBZmZRUitzSnRmVUJMdlY5ckZqZ0V5WVlRY2NGeUhLQkluTjlQaDN0T3BIT3lUeCtNL2kK",
+      "endpoints": [
+        "https://github.com/Arti-Ko/CoffeeStation/releases/latest/download/latest.json"
+      ]
+    }
   },
   "bundle": {
     "active": true,

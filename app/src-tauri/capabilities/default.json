@@ -42,6 +42,11 @@
     "os:default",
     "os:allow-platform",
     "os:allow-version",
-    "os:allow-arch"
+    "os:allow-arch",
+    "updater:default",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
+    "process:default",
+    "process:allow-restart"
   ]
 }

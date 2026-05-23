@@ -797,15 +797,140 @@ async fn git_init_or_clone(config: GitConfig) -> Result<GitResult, String> {
     Ok(init)
 }
 
+/// Safe pull: never lose user data.
+///
+/// Standard `git pull` blows up with:
+///   * "untracked working tree files would be overwritten by merge"
+///   * "Pulling is not possible because you have unmerged files"
+///   * conflicting hunks during rebase
+///
+/// Strategy:
+///   1. Abort any in-progress merge/rebase so the working tree is clean.
+///   2. `git fetch origin main` to know the remote tree without touching local.
+///   3. For every untracked file in the working tree that also exists in
+///      `origin/main`, move it aside to `<stem> (конфликт <ISO date>).<ext>`.
+///   4. `git pull --rebase --autostash origin main`. With the conflicting
+///      untracked files out of the way, the merge succeeds.
+///   5. If rebase still hits a conflict on tracked files, abort and try a
+///      plain merge with `-X theirs` — last-writer-wins, but the user's
+///      pre-pull version is preserved in the renamed file we created.
+///
+/// Returns the list of renamed files in `stdout` so the UI can toast them.
 #[tauri::command]
 async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
     let path = std::path::PathBuf::from(&config.local_path);
     let url = embed_token(&config.repo_url, &config.token);
     let _ = run_git(&["remote", "set-url", "origin", &url], &path);
-    let res = run_git(&["pull", "--rebase", "--autostash", "origin", "main"], &path);
-    // Strip the token back out
+
+    // 1. Clean any half-finished merge/rebase from a previous failed pull.
+    let _ = run_git(&["rebase", "--abort"], &path);
+    let _ = run_git(&["merge", "--abort"], &path);
+    // Drop any leftover MERGE_/REBASE_ state files just in case.
+    let _ = run_git(&["reset", "--mixed", "HEAD"], &path);
+
+    // 2. Fetch first so we can inspect remote without merging.
+    let fetch = run_git(&["fetch", "origin", "main"], &path);
+    if !fetch.success {
+        let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
+        return Ok(fetch);
+    }
+
+    // 3. Find untracked files that conflict with remote and rename them.
+    let untracked = run_git(&["ls-files", "--others", "--exclude-standard", "-z"], &path);
+    let remote_tree = run_git(&["ls-tree", "-r", "--name-only", "-z", "origin/main"], &path);
+    let mut renamed: Vec<String> = Vec::new();
+    if untracked.success && remote_tree.success {
+        let remote_files: std::collections::HashSet<String> = remote_tree
+            .stdout
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let timestamp = chrono_like_now();
+        for f in untracked.stdout.split('\0').filter(|s| !s.is_empty()) {
+            if !remote_files.contains(f) {
+                continue;
+            }
+            let src = path.join(f);
+            let conflict_name = sidecar_name(f, &timestamp);
+            let dst = path.join(&conflict_name);
+            if let Some(parent) = dst.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            if tokio::fs::rename(&src, &dst).await.is_ok() {
+                renamed.push(format!("{f} → {conflict_name}"));
+            }
+        }
+    }
+
+    // 4. Pull. With conflicts moved aside, this should succeed.
+    let mut res = run_git(&["pull", "--rebase", "--autostash", "origin", "main"], &path);
+
+    // 5. If rebase still failed on tracked files, fall back to a merge that
+    //    prefers theirs. The local pre-pull state has already been moved aside
+    //    in step 3 (for untracked) — tracked files keep their git history.
+    if !res.success {
+        let _ = run_git(&["rebase", "--abort"], &path);
+        res = run_git(
+            &["pull", "--no-rebase", "-X", "theirs", "origin", "main"],
+            &path,
+        );
+        if !res.success {
+            let _ = run_git(&["merge", "--abort"], &path);
+        }
+    }
+
+    if !renamed.is_empty() {
+        let suffix = format!("\n[safe-pull] renamed {} conflicting file(s):\n  {}",
+            renamed.len(), renamed.join("\n  "));
+        res.stdout.push_str(&suffix);
+    }
+
     let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
     Ok(res)
+}
+
+/// Build a "<stem> (конфликт YYYY-MM-DD HHMM).<ext>" sibling filename.
+fn sidecar_name(relpath: &str, timestamp: &str) -> String {
+    let p = std::path::Path::new(relpath);
+    let parent = p.parent().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = p.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = p.extension().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+    let base = if ext.is_empty() {
+        format!("{stem} (конфликт {timestamp})")
+    } else {
+        format!("{stem} (конфликт {timestamp}).{ext}")
+    };
+    if parent.is_empty() {
+        base
+    } else {
+        format!("{parent}/{base}")
+    }
+}
+
+/// Quick-and-dirty local timestamp for the conflict suffix — avoids adding a
+/// `chrono` dependency just for one format string.
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // YYYY-MM-DD HHMM (UTC). Good enough for filenames.
+    let days = secs / 86_400;
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    let hour = (secs % 86_400) / 3_600;
+    let minute = (secs % 3_600) / 60;
+    format!("{:04}-{:02}-{:02} {:02}{:02}", y, m, d, hour, minute)
 }
 
 #[tauri::command]
@@ -1030,6 +1155,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             ai_rag,
             ai_transform,

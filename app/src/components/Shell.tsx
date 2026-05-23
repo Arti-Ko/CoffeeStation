@@ -26,6 +26,7 @@ import { KanbanView } from "@/components/views/KanbanView";
 import { TitleBar } from "@/components/shell/TitleBar";
 import { TabsBar } from "@/components/shell/TabsBar";
 import { SyncStatusBadge } from "@/components/shell/SyncStatusBadge";
+import { UpdateModal } from "@/components/shell/UpdateModal";
 
 export function Shell() {
   const view = useApp((s) => s.view);
@@ -150,6 +151,7 @@ export function Shell() {
         </Group>
         <CommandPalette />
         <SyncStatusBadge />
+        <UpdateModal />
         <Toaster richColors position="bottom-right" theme="system" />
       </div>
     </TooltipProvider>

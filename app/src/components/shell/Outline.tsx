@@ -13,15 +13,22 @@ interface OutlineEntry {
 export function Outline({ noteId }: { noteId: string }) {
   const note = useLiveQuery(() => db.notes.get(noteId), [noteId]);
 
+  // Depend on `note.content` only — not the whole `note` object. Every
+  // autosave updates `updatedAt`, returning a fresh `note` reference, which
+  // used to invalidate this memo even when the HTML body was unchanged
+  // (typing past a debounce boundary creates a new `note` ref on each
+  // save). DOM parsing through the full body on every keystroke chunk was
+  // a major source of jank in long notes.
+  const content = note?.content ?? "";
   const headings: OutlineEntry[] = useMemo(() => {
-    if (!note) return [];
+    if (!content) return [];
     if (typeof DOMParser === "undefined") return [];
-    const doc = new DOMParser().parseFromString(note.content, "text/html");
+    const doc = new DOMParser().parseFromString(content, "text/html");
     return Array.from(doc.querySelectorAll("h1, h2, h3, h4")).map((el) => ({
       level: parseInt(el.tagName.substring(1)),
       text: el.textContent ?? "",
     }));
-  }, [note]);
+  }, [content]);
 
   const minLevel = useMemo(
     () => (headings.length === 0 ? 1 : Math.min(...headings.map((h) => h.level))),

@@ -42,6 +42,7 @@ import { deleteFileAt, getVaultPaths, mirrorNoteToDisk, noteDiskPath } from "@/l
 import { noteToMarkdown } from "@/lib/desktop/export";
 import { isDesktop } from "@/lib/desktop/runtime";
 import { createNewNote } from "@/lib/db/note-create";
+import { useActiveNotes } from "@/lib/db/hooks";
 import { FileViewer } from "@/components/files/FileViewer";
 import {
   ContextMenu,
@@ -81,7 +82,7 @@ interface MultiSelect {
 
 export function FilesPanel() {
   const folders = useLiveQuery(() => db.folders.toArray()) ?? [];
-  const notes = useLiveQuery(() => db.notes.filter((n) => n.archivedAt == null).toArray()) ?? [];
+  const notes = useActiveNotes();
   const tagsRaw = useLiveQuery(() => db.tags.toArray()) ?? [];
   const allTags = useLiveQuery(async () => {
     const all = await db.notes.filter((n) => n.archivedAt == null).toArray();
@@ -292,14 +293,21 @@ export function FilesPanel() {
     [vaultFiles, folders],
   );
 
-  const rootFolders = folders.filter((f) => !f.parentId && !f.hidden);
-  const hiddenFolders = folders.filter((f) => f.hidden);
-  const pinned = notes.filter((n) => n.pinned);
+  // Memoise the derived lists so they keep stable identity across renders
+  // when the underlying arrays didn't change. Otherwise every hover /
+  // selection toggle re-allocates `rootFolders` etc., invalidating the
+  // memoised maps in `<FolderNode>` and `<NoteRow>` downstream.
+  const rootFolders = useMemo(
+    () => folders.filter((f) => !f.parentId && !f.hidden),
+    [folders],
+  );
+  const hiddenFolders = useMemo(() => folders.filter((f) => f.hidden), [folders]);
+  const pinned = useMemo(() => notes.filter((n) => n.pinned), [notes]);
   // Notes living at vault root (no folder) — shown above folders so a freshly
   // created "vault-root" note isn't invisible until the user files it.
-  const rootNotes = sortNotes(
-    notes.filter((n) => n.folderId == null && !n.pinned),
-    sortMode,
+  const rootNotes = useMemo(
+    () => sortNotes(notes.filter((n) => n.folderId == null && !n.pinned), sortMode),
+    [notes, sortMode],
   );
 
   return (

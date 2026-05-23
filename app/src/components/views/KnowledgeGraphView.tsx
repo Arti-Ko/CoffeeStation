@@ -30,6 +30,7 @@ import {
   type ColorGroup,
 } from "@/lib/graph/settings";
 import { parseQuery, folderChainFor } from "@/lib/graph/query";
+import { useActiveNotes } from "@/lib/db/hooks";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -60,7 +61,7 @@ interface RFGLink {
 }
 
 export function KnowledgeGraphView() {
-  const notes = useLiveQuery(() => db.notes.filter((n) => n.archivedAt == null).toArray()) ?? [];
+  const notes = useActiveNotes();
   const folders = useLiveQuery(() => db.folders.toArray()) ?? [];
   const tagsTable = useLiveQuery(() => db.tags.toArray()) ?? [];
   const setView = useApp((s) => s.setView);

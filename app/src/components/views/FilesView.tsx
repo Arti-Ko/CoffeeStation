@@ -1,7 +1,7 @@
 "use client";
 
-import { useLiveQuery } from "dexie-react-hooks";
-import { db, type Note } from "@/lib/db/schema";
+import { type Note } from "@/lib/db/schema";
+import { useActiveNotes } from "@/lib/db/hooks";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -81,7 +81,7 @@ const FILTERS: { kind: FileKind | "all"; label: string }[] = [
 ];
 
 export function FilesView() {
-  const notes = useLiveQuery(() => db.notes.filter((n) => n.archivedAt == null).toArray()) ?? [];
+  const notes = useActiveNotes();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FileKind | "all">("all");
   const [view, setView] = useState<"grid" | "list">("grid");

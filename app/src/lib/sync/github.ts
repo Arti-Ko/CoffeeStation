@@ -219,6 +219,7 @@ export async function pullRepo(opts: { silent?: boolean; reason?: string } = {})
     // stderr when commit step produced any stdout.
     detail = [res.stdout, res.stderr].filter(Boolean).join("\n\n").trim();
 
+    let importError: string | null = null;
     if (res.success) {
       useApp.getState().setSyncOp({
         kind: "pull",
@@ -230,16 +231,34 @@ export async function pullRepo(opts: { silent?: boolean; reason?: string } = {})
         const { importVaultFromFolder } = await import("@/lib/desktop/import");
         const result = await importVaultFromFolder(cfg.localPath);
         imported = result.notes;
+        // Surface import outcome in the detail so the user can see what
+        // happened. Previously a 0-note result looked identical to a
+        // working import that found nothing new — masking bugs like
+        // wrong localPath or a half-finished clone on a fresh device.
+        const importSummary = `[import] scanned ${result.files} file(s), imported ${result.notes}, skipped ${result.skipped}, folders ${result.folders}`;
+        detail = [detail, importSummary].filter(Boolean).join("\n\n").trim();
+        if (result.errors.length > 0) {
+          detail = [detail, `[import errors]\n  ${result.errors.slice(0, 5).join("\n  ")}`]
+            .filter(Boolean)
+            .join("\n\n");
+        }
       } catch (e) {
-        console.debug("[pull] vault import failed:", e);
+        importError = e instanceof Error ? e.message : String(e);
+        detail = [detail, `[import] FAILED: ${importError}`].filter(Boolean).join("\n\n").trim();
       }
     }
 
     message = res.success
-      ? imported > 0
-        ? `Получено и импортировано: ${imported} заметок`
-        : "Изменения получены"
+      ? importError
+        ? "Pull прошёл, но импорт vault не удался"
+        : imported > 0
+          ? `Получено и импортировано: ${imported} заметок`
+          : "Изменения получены"
       : "Pull не удался";
+    // An import failure shouldn't claim success — the user opened Pull to
+    // see new notes, and if the import bombed the data isn't actually in
+    // the DB.
+    if (importError) success = false;
   } finally {
     useApp.getState().setSyncOp(null);
     await saveGitHubConfig({
@@ -466,10 +485,32 @@ export async function autoOnboard(opts: {
     await setupLfs(opts.localPath, cfg.lfsPatterns);
   }
 
+  // 5. First-time bring-down. For a brand-new install connecting to an
+  //    existing vault, the clone above may have put files on disk but
+  //    nothing has populated IndexedDB yet — so the app boots empty even
+  //    though the vault is right there. Run a pull (which scans the
+  //    working dir and imports into Dexie) so the user sees their notes
+  //    immediately. If this is a fresh repo (nothing to pull), pull's
+  //    import step is still a no-op, so this is safe either way.
+  let firstPullSummary = "";
+  try {
+    const pull = await pullRepo({ silent: true, reason: "auto-onboard" });
+    if (pull.ok && pull.added > 0) {
+      firstPullSummary = ` · импортировано ${pull.added} заметок`;
+    } else if (!pull.ok) {
+      // Not a hard error — the connect itself succeeded. Surface as
+      // soft warning text the caller can show. The Pull button stays
+      // available for a retry.
+      firstPullSummary = ` · pull не удался: ${pull.message}`;
+    }
+  } catch (e) {
+    firstPullSummary = ` · pull выбросил: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
   return {
     ok: true,
-    message: repo.created
+    message: (repo.created
       ? `Создан приватный repo ${opts.user.login}/${opts.repoName}`
-      : `Подключён ${opts.user.login}/${opts.repoName}`,
+      : `Подключён ${opts.user.login}/${opts.repoName}`) + firstPullSummary,
   };
 }

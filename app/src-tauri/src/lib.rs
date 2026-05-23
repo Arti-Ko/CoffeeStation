@@ -649,7 +649,13 @@ async fn github_ensure_repo(
 
 #[tauri::command]
 async fn git_lfs_check() -> bool {
-    let out = std::process::Command::new("git").args(["lfs", "version"]).output();
+    // Same PATH augmentation as `run_git` — without this, a GUI-launched
+    // macOS app can't see Homebrew's `git-lfs` even though it's installed,
+    // and the Settings panel keeps showing "GIT-LFS не установлен" forever.
+    let out = std::process::Command::new("git")
+        .args(["lfs", "version"])
+        .env("PATH", augmented_path())
+        .output();
     matches!(out, Ok(o) if o.status.success())
 }
 
@@ -805,17 +811,12 @@ fn try_resolve_modify_delete(cwd: &std::path::Path) -> Option<GitResult> {
     Some(out)
 }
 
-fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(args).current_dir(cwd);
-    // Avoid interactive prompts (askpass)
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.env("GIT_ASKPASS", "/bin/echo");
-    // GUI-launched macOS apps inherit a stripped PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
-    // — Homebrew installs (where `git-lfs` lives) aren't visible to spawned
-    // processes. Prepend the standard Homebrew locations so the LFS
-    // pre-push hook can find `git-lfs` on the user's machine. Linux/Windows
-    // keep their own PATH; we only augment, never replace.
+/// Build a PATH that's safe for GUI-launched macOS apps. The bundle inherits
+/// a stripped `/usr/bin:/bin:/usr/sbin:/sbin`, missing Homebrew's
+/// `/opt/homebrew/bin` (Apple Silicon) and `/usr/local/bin` (Intel) — both of
+/// which is where `git` and `git-lfs` actually live. Linux/Windows already
+/// have sensible PATHs; we only ever prepend, never replace.
+fn augmented_path() -> String {
     let extra_path = [
         "/opt/homebrew/bin",
         "/opt/homebrew/sbin",
@@ -827,7 +828,16 @@ fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
     if !existing.is_empty() {
         parts.push(existing);
     }
-    cmd.env("PATH", parts.join(":"));
+    parts.join(":")
+}
+
+fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(cwd);
+    // Avoid interactive prompts (askpass)
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_ASKPASS", "/bin/echo");
+    cmd.env("PATH", augmented_path());
     let command = format!("git {}", args.join(" "));
     match cmd.output() {
         Ok(out) => GitResult {
@@ -847,7 +857,10 @@ fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
 
 #[tauri::command]
 async fn git_check() -> Result<bool, String> {
-    let out = std::process::Command::new("git").arg("--version").output();
+    let out = std::process::Command::new("git")
+        .arg("--version")
+        .env("PATH", augmented_path())
+        .output();
     Ok(matches!(out, Ok(o) if o.status.success()))
 }
 

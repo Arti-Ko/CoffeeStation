@@ -866,18 +866,38 @@ async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
     // 4. Pull. With conflicts moved aside, this should succeed.
     let mut res = run_git(&["pull", "--rebase", "--autostash", "origin", "main"], &path);
 
-    // 5. If rebase still failed on tracked files, fall back to a merge that
-    //    prefers theirs. The local pre-pull state has already been moved aside
-    //    in step 3 (for untracked) — tracked files keep their git history.
+    // 5. If rebase failed, try a merge with `-X theirs`. Local untracked
+    //    conflicts are already renamed (step 3); tracked files keep history.
     if !res.success {
         let _ = run_git(&["rebase", "--abort"], &path);
         res = run_git(
             &["pull", "--no-rebase", "-X", "theirs", "origin", "main"],
             &path,
         );
-        if !res.success {
-            let _ = run_git(&["merge", "--abort"], &path);
-        }
+    }
+
+    // 6. Unrelated histories: this happens when the local repo was `git init`-ed
+    //    locally (the fallback path in git_init_or_clone) and the remote was
+    //    created independently. Retry with --allow-unrelated-histories so the
+    //    two roots get stitched together via one merge commit.
+    if !res.success && res.stderr.contains("refusing to merge unrelated histories") {
+        let _ = run_git(&["merge", "--abort"], &path);
+        res = run_git(
+            &[
+                "pull",
+                "--no-rebase",
+                "--allow-unrelated-histories",
+                "-X",
+                "theirs",
+                "origin",
+                "main",
+            ],
+            &path,
+        );
+    }
+
+    if !res.success {
+        let _ = run_git(&["merge", "--abort"], &path);
     }
 
     if !renamed.is_empty() {

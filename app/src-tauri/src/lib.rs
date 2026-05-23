@@ -823,16 +823,67 @@ async fn git_pull(config: GitConfig) -> Result<GitResult, String> {
     let _ = run_git(&["remote", "set-url", "origin", &url], &path);
 
     // 1. Clean any half-finished merge/rebase from a previous failed pull.
+    //    We only `reset --mixed HEAD` when HEAD exists — otherwise that fails
+    //    on a brand-new local repo with no commits yet.
     let _ = run_git(&["rebase", "--abort"], &path);
     let _ = run_git(&["merge", "--abort"], &path);
-    // Drop any leftover MERGE_/REBASE_ state files just in case.
-    let _ = run_git(&["reset", "--mixed", "HEAD"], &path);
+    let has_head = run_git(&["rev-parse", "--verify", "HEAD"], &path).success;
+    if has_head {
+        let _ = run_git(&["reset", "--mixed", "HEAD"], &path);
+    }
 
     // 2. Fetch first so we can inspect remote without merging.
     let fetch = run_git(&["fetch", "origin", "main"], &path);
     if !fetch.success {
         let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
         return Ok(fetch);
+    }
+
+    // 2a. Special case: brand-new local repo (no commits yet) but the remote
+    //     has history. `git pull --rebase --autostash` blows up with
+    //     "stash failed" because there's no HEAD to bounce off. Resolve by
+    //     renaming local files that would clobber remote ones, then
+    //     hard-resetting to origin/main so the working tree is initialised
+    //     from the remote.
+    if !has_head {
+        let untracked = run_git(&["ls-files", "--others", "--exclude-standard", "-z"], &path);
+        let remote_tree = run_git(&["ls-tree", "-r", "--name-only", "-z", "origin/main"], &path);
+        let mut renamed: Vec<String> = Vec::new();
+        if untracked.success && remote_tree.success {
+            let remote_files: std::collections::HashSet<String> = remote_tree
+                .stdout
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            let ts = chrono_like_now();
+            for f in untracked.stdout.split('\0').filter(|s| !s.is_empty()) {
+                if !remote_files.contains(f) { continue; }
+                let src = path.join(f);
+                let conflict_name = sidecar_name(f, &ts);
+                let dst = path.join(&conflict_name);
+                if let Some(parent) = dst.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                if tokio::fs::rename(&src, &dst).await.is_ok() {
+                    renamed.push(format!("{f} → {conflict_name}"));
+                }
+            }
+        }
+        // Materialise the remote history as our local main.
+        let checkout = run_git(&["checkout", "-B", "main", "origin/main"], &path);
+        let _ = run_git(&["branch", "--set-upstream-to=origin/main", "main"], &path);
+        let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
+        let mut res = checkout;
+        if !renamed.is_empty() {
+            let suffix = format!(
+                "\n[safe-pull] no local history; bootstrapped from origin/main and renamed {} pre-existing file(s):\n  {}",
+                renamed.len(),
+                renamed.join("\n  "),
+            );
+            res.stdout.push_str(&suffix);
+        }
+        return Ok(res);
     }
 
     // 3. Find untracked files that conflict with remote and rename them.

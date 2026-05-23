@@ -735,6 +735,23 @@ fn run_git(args: &[&str], cwd: &std::path::Path) -> GitResult {
     // Avoid interactive prompts (askpass)
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_ASKPASS", "/bin/echo");
+    // GUI-launched macOS apps inherit a stripped PATH (`/usr/bin:/bin:/usr/sbin:/sbin`)
+    // — Homebrew installs (where `git-lfs` lives) aren't visible to spawned
+    // processes. Prepend the standard Homebrew locations so the LFS
+    // pre-push hook can find `git-lfs` on the user's machine. Linux/Windows
+    // keep their own PATH; we only augment, never replace.
+    let extra_path = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<String> = extra_path.iter().map(|s| s.to_string()).collect();
+    if !existing.is_empty() {
+        parts.push(existing);
+    }
+    cmd.env("PATH", parts.join(":"));
     let command = format!("git {}", args.join(" "));
     match cmd.output() {
         Ok(out) => GitResult {

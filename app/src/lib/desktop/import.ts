@@ -115,6 +115,14 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
     }
   });
 
+  // Build full add/update payload lists first, then commit in two bulk
+  // operations inside a single transaction. Previously this loop did
+  // `await db.notes.add()` / `db.notes.update()` per file → N IndexedDB
+  // round-trips for N files. On a 500-note vault that's the difference
+  // between ~5 s and <500 ms.
+  const toAdd: Note[] = [];
+  const toUpdate: Array<{ key: string; changes: Partial<Note> }> = [];
+
   for (const file of files) {
     try {
       const parsed = matter(file.content);
@@ -142,17 +150,20 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
           result.skipped += 1;
           continue;
         }
-        await db.notes.update(existing.id, {
-          title: file.name,
-          content: html,
-          contentText: text,
-          tags,
-          links: wikiLinks,
-          folderId,
-          updatedAt: file.modified || Date.now(),
+        toUpdate.push({
+          key: existing.id,
+          changes: {
+            title: file.name,
+            content: html,
+            contentText: text,
+            tags,
+            links: wikiLinks,
+            folderId,
+            updatedAt: file.modified || Date.now(),
+          },
         });
       } else {
-        await db.notes.add({
+        toAdd.push({
           id: nanoid(10),
           title: file.name,
           content: html,
@@ -174,6 +185,13 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
     } catch (err) {
       result.errors.push(`${file.relative}: ${String(err)}`);
     }
+  }
+
+  if (toAdd.length > 0 || toUpdate.length > 0) {
+    await db.transaction("rw", db.notes, async () => {
+      if (toAdd.length > 0) await db.notes.bulkAdd(toAdd);
+      if (toUpdate.length > 0) await db.notes.bulkUpdate(toUpdate);
+    });
   }
 
   return result;

@@ -16,7 +16,22 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import Image from "@tiptap/extension-image";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
-import { common, createLowlight } from "lowlight";
+import { createLowlight } from "lowlight";
+// Only the languages we actually highlight. `common` ships ~20 grammars (~80
+// kB gzipped) — most of them are languages our users never write code in.
+// Adding more here is one-line: `import xml from 'highlight.js/lib/languages/xml'`.
+import js from "highlight.js/lib/languages/javascript";
+import ts from "highlight.js/lib/languages/typescript";
+import python from "highlight.js/lib/languages/python";
+import rust from "highlight.js/lib/languages/rust";
+import go from "highlight.js/lib/languages/go";
+import json from "highlight.js/lib/languages/json";
+import yaml from "highlight.js/lib/languages/yaml";
+import markdown from "highlight.js/lib/languages/markdown";
+import xml from "highlight.js/lib/languages/xml";
+import css from "highlight.js/lib/languages/css";
+import bash from "highlight.js/lib/languages/bash";
+import sql from "highlight.js/lib/languages/sql";
 import { useEffect, useRef } from "react";
 import { WikiLink } from "@/lib/editor/wiki-link";
 import { Hashtag } from "@/lib/editor/hashtag";
@@ -43,7 +58,31 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-const lowlight = createLowlight(common);
+const lowlight = createLowlight({
+  javascript: js,
+  js,
+  typescript: ts,
+  ts,
+  jsx: js,
+  tsx: ts,
+  python: python,
+  py: python,
+  rust: rust,
+  rs: rust,
+  go,
+  json,
+  yaml,
+  yml: yaml,
+  markdown,
+  md: markdown,
+  html: xml,
+  xml,
+  css,
+  bash,
+  sh: bash,
+  shell: bash,
+  sql,
+});
 
 export interface EditorProps {
   content: string;

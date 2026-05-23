@@ -128,13 +128,24 @@ async function exportNotesToWorkingDir(cfg: GitHubConfig): Promise<number> {
     return parts.join("/");
   };
 
+  // Parallelise the writes through the Tauri bridge. File I/O is
+  // independent per note, so awaiting each in series wasted RTTs.
+  // Process in chunks to avoid swamping the OS with thousands of
+  // concurrent opens on huge vaults.
+  const CHUNK = 32;
   let written = 0;
-  for (const n of notes) {
-    const rel = pathFor(n);
-    const full = `${cfg.localPath}/${rel}`;
-    const markdown = noteToMarkdown(n);
-    await invoke<void>("write_text_file_at", { path: full, content: markdown });
-    written += 1;
+  for (let i = 0; i < notes.length; i += CHUNK) {
+    const slice = notes.slice(i, i + CHUNK);
+    await Promise.all(
+      slice.map((n) => {
+        const full = `${cfg.localPath}/${pathFor(n)}`;
+        return invoke<void>("write_text_file_at", {
+          path: full,
+          content: noteToMarkdown(n),
+        });
+      }),
+    );
+    written += slice.length;
   }
   return written;
 }

@@ -1,19 +1,54 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, usePanelRef, type PanelImperativeHandle } from "react-resizable-panels";
 import { Sidebar, SidebarCollapsedRail } from "@/components/shell/Sidebar";
 import { FilesPanel, FilesPanelCollapsedStrip } from "@/components/shell/FilesPanel";
 import { CommandPalette } from "@/components/shell/CommandPalette";
+// Hot paths stay statically imported — these are the first views the user
+// sees and they're already in the React render tree by the time anything
+// else loads.
 import { KnowledgeBaseView } from "@/components/views/KnowledgeBaseView";
 import { NoteView } from "@/components/views/NoteView";
-import { KnowledgeGraphView } from "@/components/views/KnowledgeGraphView";
-import { CanvasView } from "@/components/views/CanvasView";
 import { FilesView } from "@/components/views/FilesView";
-import { DatabaseView } from "@/components/views/DatabaseView";
-import { DailyNotesView } from "@/components/views/DailyNotesView";
-import { TemplatesView } from "@/components/views/TemplatesView";
-import { SettingsView } from "@/components/views/SettingsView";
+// Rare views via next/dynamic so their dep chains (Three.js for the graph,
+// xlsx/mammoth in the file viewer, react-colorful in ThemeStudio, etc.)
+// don't ship in the initial bundle. Tauri loads from the local file-system
+// so the "fetch" of a lazy chunk is effectively free; the win is JS parse
+// time at cold start.
+const KnowledgeGraphView = dynamic(
+  () => import("@/components/views/KnowledgeGraphView").then((m) => m.KnowledgeGraphView),
+  { ssr: false, loading: () => <LazyFallback label="Граф" /> },
+);
+const CanvasView = dynamic(
+  () => import("@/components/views/CanvasView").then((m) => m.CanvasView),
+  { ssr: false, loading: () => <LazyFallback label="Канвас" /> },
+);
+const DatabaseView = dynamic(
+  () => import("@/components/views/DatabaseView").then((m) => m.DatabaseView),
+  { ssr: false, loading: () => <LazyFallback label="База данных" /> },
+);
+const DailyNotesView = dynamic(
+  () => import("@/components/views/DailyNotesView").then((m) => m.DailyNotesView),
+  { ssr: false, loading: () => <LazyFallback label="Daily" /> },
+);
+const TemplatesView = dynamic(
+  () => import("@/components/views/TemplatesView").then((m) => m.TemplatesView),
+  { ssr: false, loading: () => <LazyFallback label="Шаблоны" /> },
+);
+const SettingsView = dynamic(
+  () => import("@/components/views/SettingsView").then((m) => m.SettingsView),
+  { ssr: false, loading: () => <LazyFallback label="Настройки" /> },
+);
+const ThemeStudio = dynamic(
+  () => import("@/components/views/ThemeStudio").then((m) => m.ThemeStudio),
+  { ssr: false, loading: () => <LazyFallback label="Theme Studio" /> },
+);
+const KanbanView = dynamic(
+  () => import("@/components/views/KanbanView").then((m) => m.KanbanView),
+  { ssr: false, loading: () => <LazyFallback label="Канбан" /> },
+);
 import { useApp, applyTheme } from "@/lib/store";
 import { seedIfEmpty } from "@/lib/db/seed";
 import { Toaster } from "sonner";
@@ -21,12 +56,18 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { db } from "@/lib/db/schema";
 import { applyTheme as applyThemeTokens } from "@/lib/theme/apply";
 import type { ThemeTokens } from "@/lib/theme/tokens";
-import { ThemeStudio } from "@/components/views/ThemeStudio";
-import { KanbanView } from "@/components/views/KanbanView";
 import { TitleBar } from "@/components/shell/TitleBar";
 import { TabsBar } from "@/components/shell/TabsBar";
 import { SyncStatusBadge } from "@/components/shell/SyncStatusBadge";
 import { UpdateModal } from "@/components/shell/UpdateModal";
+
+function LazyFallback({ label }: { label: string }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center text-fg-subtle text-[12px]">
+      Загрузка «{label}»…
+    </div>
+  );
+}
 
 export function Shell() {
   const view = useApp((s) => s.view);

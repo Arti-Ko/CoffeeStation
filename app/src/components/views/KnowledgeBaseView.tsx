@@ -133,14 +133,22 @@ export function KnowledgeBaseView() {
   const deleteSelected = async (hard: boolean) => {
     if (selected.size === 0) return;
     if (!confirm(`${hard ? "Безвозвратно удалить" : "Переместить в корзину"} ${selected.size} заметок?`)) return;
+    // Wipe the disk mirrors first so the next sync/import doesn't resurrect
+    // them. Snapshot the notes BEFORE the DB mutation so paths can still be
+    // computed.
+    const ids = Array.from(selected);
+    const notesToWipe = await db.notes.bulkGet(ids);
+    const folders = await db.folders.toArray();
+    const { removeNotesOnDisk } = await import("@/lib/desktop/paths");
+    void removeNotesOnDisk(
+      notesToWipe.filter((n): n is NonNullable<typeof n> => !!n),
+      folders,
+    );
     if (hard) {
-      await db.notes.bulkDelete(Array.from(selected));
+      await db.notes.bulkDelete(ids);
     } else {
       await db.notes.bulkUpdate(
-        Array.from(selected).map((id) => ({
-          key: id,
-          changes: { archivedAt: Date.now() },
-        })),
+        ids.map((id) => ({ key: id, changes: { archivedAt: Date.now() } })),
       );
     }
     toast.success(`${hard ? "Удалено" : "В корзине"}: ${selected.size}`);

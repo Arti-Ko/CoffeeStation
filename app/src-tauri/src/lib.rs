@@ -1293,6 +1293,23 @@ async fn delete_file_at(path: String) -> Result<(), String> {
     }
 }
 
+/// Recursive directory removal. Used when a user deletes a folder in the app
+/// so its on-disk mirror does not become a ghost of stale `.md` files (which
+/// would re-import the next time the vault is scanned).
+///
+/// Idempotent: missing path is fine. The Rust side intentionally does NOT
+/// reject if the path lies outside the vault root — that contract is the
+/// caller's responsibility (`paths.ts` always builds paths from the
+/// configured `vaultRoot`).
+#[tauri::command]
+async fn delete_dir_at(path: String) -> Result<(), String> {
+    match tokio::fs::remove_dir_all(&path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 fn platform_info() -> serde_json::Value {
     serde_json::json!({
@@ -1319,6 +1336,7 @@ pub fn run() {
             open_in_finder,
             mirror_note_to_disk,
             delete_file_at,
+            delete_dir_at,
             scan_vault,
             git_check,
             git_init_or_clone,

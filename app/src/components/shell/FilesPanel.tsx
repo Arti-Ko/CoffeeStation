@@ -218,20 +218,33 @@ export function FilesPanel() {
       selectedFolders.size > 0 && `${selectedFolders.size} папок`,
     ].filter(Boolean).join(" + ");
     if (!confirm(`Переместить ${summary} в корзину?`)) return;
+    const { removeNotesOnDisk, removeFoldersOnDisk } = await import("@/lib/desktop/paths");
+    const allFolders = await db.folders.toArray();
+
     if (selectedNotes.size > 0) {
+      // Snapshot notes BEFORE flagging them so we can resolve paths.
+      const noteIds = Array.from(selectedNotes);
+      const notesToWipe = await db.notes.bulkGet(noteIds);
+      const validNotes = notesToWipe.filter((n): n is NonNullable<typeof n> => !!n);
+      void removeNotesOnDisk(validNotes, allFolders);
       await db.notes.bulkUpdate(
-        Array.from(selectedNotes).map((id) => ({ key: id, changes: { archivedAt: Date.now() } })),
+        noteIds.map((id) => ({ key: id, changes: { archivedAt: Date.now() } })),
       );
     }
     if (selectedFolders.size > 0) {
-      // Archive all notes inside selected folders, then delete the folders
       const folderIds = Array.from(selectedFolders);
       const noteIds = await db.notes.where("folderId").anyOf(folderIds).primaryKeys();
       if (noteIds.length > 0) {
+        const notesToWipe = await db.notes.bulkGet(noteIds as string[]);
+        const validNotes = notesToWipe.filter((n): n is NonNullable<typeof n> => !!n);
+        void removeNotesOnDisk(validNotes, allFolders);
         await db.notes.bulkUpdate(
           (noteIds as string[]).map((id) => ({ key: id, changes: { archivedAt: Date.now() } })),
         );
       }
+      // Remove the on-disk folder mirrors too (recursive) before dropping
+      // from DB — files inside may have been just-archived above.
+      void removeFoldersOnDisk(folderIds.map((id) => ({ id })), allFolders);
       await db.folders.bulkDelete(folderIds);
     }
     toast.success(`В корзине: ${summary}`);
@@ -245,8 +258,14 @@ export function FilesPanel() {
       selectedFolders.size > 0 && `${selectedFolders.size} папок`,
     ].filter(Boolean).join(" + ");
     if (!confirm(`Безвозвратно удалить ${summary}?`)) return;
+    const { removeNotesOnDisk, removeFoldersOnDisk } = await import("@/lib/desktop/paths");
+    const allFolders = await db.folders.toArray();
+
     if (selectedNotes.size > 0) {
       const ids = Array.from(selectedNotes);
+      const notesToWipe = await db.notes.bulkGet(ids);
+      const validNotes = notesToWipe.filter((n): n is NonNullable<typeof n> => !!n);
+      void removeNotesOnDisk(validNotes, allFolders);
       await db.notes.bulkDelete(ids);
       await db.versions.where("noteId").anyOf(ids).delete();
     }
@@ -254,9 +273,13 @@ export function FilesPanel() {
       const folderIds = Array.from(selectedFolders);
       const noteIds = (await db.notes.where("folderId").anyOf(folderIds).primaryKeys()) as string[];
       if (noteIds.length > 0) {
+        const notesToWipe = await db.notes.bulkGet(noteIds);
+        const validNotes = notesToWipe.filter((n): n is NonNullable<typeof n> => !!n);
+        void removeNotesOnDisk(validNotes, allFolders);
         await db.notes.bulkDelete(noteIds);
         await db.versions.where("noteId").anyOf(noteIds).delete();
       }
+      void removeFoldersOnDisk(folderIds.map((id) => ({ id })), allFolders);
       await db.folders.bulkDelete(folderIds);
     }
     toast.success(`Удалено: ${summary}`);
@@ -836,6 +859,10 @@ function FolderContextMenuContent({
       toast.error("Сначала удалите подпапки");
       return;
     }
+    // Compute path before mutation, then wipe on disk + flag in DB.
+    const allFolders = await db.folders.toArray();
+    const { removeFoldersOnDisk } = await import("@/lib/desktop/paths");
+    void removeFoldersOnDisk([{ id: folder.id }], allFolders);
     await db.transaction("rw", db.folders, db.notes, async () => {
       await db.notes.where("folderId").equals(folder.id).modify({ archivedAt: Date.now() });
       await db.folders.delete(folder.id);
@@ -951,12 +978,18 @@ function NoteRow({
 
   const trash = async () => {
     if (!confirm(`Переместить «${note.title}» в корзину?`)) return;
+    const folders = await db.folders.toArray();
+    const { removeNotesOnDisk } = await import("@/lib/desktop/paths");
+    void removeNotesOnDisk([{ title: note.title, folderId: note.folderId }], folders);
     await db.notes.update(note.id, { archivedAt: Date.now() });
     toast.success("В корзине");
   };
 
   const hardDelete = async () => {
     if (!confirm(`Удалить «${note.title}» безвозвратно?`)) return;
+    const folders = await db.folders.toArray();
+    const { removeNotesOnDisk } = await import("@/lib/desktop/paths");
+    void removeNotesOnDisk([{ title: note.title, folderId: note.folderId }], folders);
     await db.notes.delete(note.id);
     await db.versions.where("noteId").equals(note.id).delete();
     toast.success("Удалено");

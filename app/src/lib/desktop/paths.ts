@@ -147,3 +147,74 @@ export async function deleteFileAt(path: string): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("delete_file_at", { path });
 }
+
+/** Recursive directory removal. Silently succeeds if it doesn't exist. */
+export async function deleteDirAt(path: string): Promise<void> {
+  if (!isDesktop() || !path) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("delete_dir_at", { path });
+}
+
+/**
+ * Build the slash-separated folder chain a note lives under, walking the
+ * given folder map. Same shape `mirrorNoteToDisk` expects.
+ */
+function chainOf(folderId: string | null, byId: Map<string, { id: string; name: string; parentId: string | null }>): string {
+  if (!folderId) return "";
+  const parts: string[] = [];
+  let cur = byId.get(folderId) ?? null;
+  while (cur) {
+    parts.unshift(cur.name);
+    cur = cur.parentId ? byId.get(cur.parentId) ?? null : null;
+  }
+  return parts.join("/");
+}
+
+/**
+ * Remove every `.md` mirror of the given notes from the on-disk vault. Best-
+ * effort: missing files are ignored. Called by every code path that deletes
+ * or trashes notes — without it, deleted notes used to linger in the vault
+ * directory until the user manually `rm`'d them.
+ *
+ * Caller must pass the notes BEFORE the DB mutation (so paths can still be
+ * resolved) along with the current folder list.
+ */
+export async function removeNotesOnDisk(
+  notes: { title: string; folderId: string | null }[],
+  folders: { id: string; name: string; parentId: string | null }[],
+): Promise<void> {
+  if (!isDesktop() || notes.length === 0) return;
+  const paths = await getVaultPaths();
+  if (!paths.vaultRoot) return;
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  await Promise.all(
+    notes.map((n) =>
+      deleteFileAt(noteDiskPath(paths.vaultRoot, chainOf(n.folderId, byId), n.title)).catch(
+        () => undefined,
+      ),
+    ),
+  );
+}
+
+/**
+ * Remove every folder (recursively, including any leftover files) of the
+ * given folder ids from disk. Walks the chain to compute the absolute path
+ * for each.
+ */
+export async function removeFoldersOnDisk(
+  toRemove: { id: string }[],
+  allFolders: { id: string; name: string; parentId: string | null }[],
+): Promise<void> {
+  if (!isDesktop() || toRemove.length === 0) return;
+  const paths = await getVaultPaths();
+  if (!paths.vaultRoot) return;
+  const byId = new Map(allFolders.map((f) => [f.id, f]));
+  const root = paths.vaultRoot.replace(/\/$/, "");
+  await Promise.all(
+    toRemove.map((f) => {
+      const chain = chainOf(f.id, byId);
+      if (!chain) return Promise.resolve();
+      return deleteDirAt(`${root}/${chain}`).catch(() => undefined);
+    }),
+  );
+}

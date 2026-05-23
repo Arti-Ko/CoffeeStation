@@ -120,6 +120,15 @@ export function NoteView({ noteId }: { noteId: string }) {
   const deleteNote = async (hard = false) => {
     const label = hard ? "Безвозвратно удалить" : "Переместить в корзину";
     if (!confirm(`${label} заметку «${note?.title ?? ""}»?`)) return;
+    // Compute the on-disk path BEFORE mutating the DB. Even on a soft
+    // trash we delete the .md mirror — if we left it, the next pull/import
+    // would resurrect the note in the sidebar. The DB entry stays so the
+    // user can still restore from the trash UI.
+    if (note) {
+      const folders = await db.folders.toArray();
+      const { removeNotesOnDisk } = await import("@/lib/desktop/paths");
+      await removeNotesOnDisk([{ title: note.title, folderId: note.folderId }], folders);
+    }
     if (hard) {
       await db.notes.delete(noteId);
       await db.versions.where("noteId").equals(noteId).delete();

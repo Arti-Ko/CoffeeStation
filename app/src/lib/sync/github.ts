@@ -213,7 +213,11 @@ export async function pullRepo(opts: { silent?: boolean; reason?: string } = {})
   try {
     res = await invoke<GitResult>("git_pull", { config: await rustConfig(cfg) });
     success = res.success;
-    detail = res.stdout || res.stderr;
+    // Combine stdout + stderr so the user sees BOTH the successful step
+    // output (e.g. the commit summary) AND the failure reason. Earlier this
+    // was `stdout || stderr`, which silently hid the real "Push не удался"
+    // stderr when commit step produced any stdout.
+    detail = [res.stdout, res.stderr].filter(Boolean).join("\n\n").trim();
 
     if (res.success) {
       useApp.getState().setSyncOp({
@@ -291,7 +295,11 @@ export async function pushAll(message?: string, reason: string = "manual"): Prom
       message: msg,
     });
     success = res.success;
-    detail = res.stdout || res.stderr;
+    // Combine stdout + stderr so the user sees BOTH the successful step
+    // output (e.g. the commit summary) AND the failure reason. Earlier this
+    // was `stdout || stderr`, which silently hid the real "Push не удался"
+    // stderr when commit step produced any stdout.
+    detail = [res.stdout, res.stderr].filter(Boolean).join("\n\n").trim();
     resultMessage = res.success ? `Pushed: ${written} файлов` : "Push не удался";
     await saveGitHubConfig({
       lastSyncedAt: Date.now(),

@@ -1069,7 +1069,29 @@ async fn git_commit_and_push(
     let url = embed_token(&config.repo_url, &config.token);
     let _ = run_git(&["remote", "set-url", "origin", &url], &path);
     let _ = run_git(&["branch", "-M", "main"], &path);
-    let push = run_git(&["push", "-u", "origin", "main"], &path);
+    let mut push = run_git(&["push", "-u", "origin", "main"], &path);
+
+    // Auto-recover from the "remote moved underneath us" case: if the
+    // push was rejected because origin/main has commits we don't, run the
+    // existing safe-pull machinery, then retry the push once. This is what
+    // makes the in-app sync feel as forgiving as Obsidian's Git plugin.
+    let looks_rejected = !push.success
+        && (push.stderr.contains("rejected")
+            || push.stderr.contains("non-fast-forward")
+            || push.stderr.contains("fetch first"));
+    if looks_rejected {
+        last.stdout.push_str("[auto-recover] push rejected by remote — pulling and retrying\n");
+        let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
+        // Reuse git_pull's safe-pull logic exactly so we get the same
+        // unrelated-histories / commit-first behaviour.
+        let pull = git_pull(config.clone()).await?;
+        last.stdout.push_str(&pull.stdout);
+        if !pull.success {
+            last.stderr.push_str(&pull.stderr);
+        }
+        let _ = run_git(&["remote", "set-url", "origin", &url], &path);
+        push = run_git(&["push", "-u", "origin", "main"], &path);
+    }
     let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
 
     if push.success {
@@ -1082,8 +1104,8 @@ async fn git_commit_and_push(
             last.stderr.push('\n');
         }
         last.stderr.push_str(&push.stderr);
+        last.stdout.push_str(&push.stdout);
     }
-    last.stdout.push_str(&push.stdout);
     Ok(last)
 }
 

@@ -68,6 +68,17 @@ export function KnowledgeGraphView() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
+  // Stable cache for graphData. We hand react-force-graph the same object
+  // reference as long as the *visible* topology (node ids + titles + colours
+  // + groups + types, plus the link set) hasn't changed. Without this, the
+  // d3 simulation restarts on every autosave because `useMemo` builds a
+  // new graphData object even when nothing rendered actually differs —
+  // every keystroke kicked the layout back to the warmup phase.
+  const stableGraphRef = useRef<{
+    key: string;
+    data: { nodes: RFGNode[]; links: RFGLink[] };
+    tagUniverse: Map<string, number>;
+  } | null>(null);
 
   const [size, setSize] = useState({ w: 1200, h: 800 });
   const [settings, setSettings] = useState<GraphSettings | null>(null);
@@ -268,7 +279,32 @@ export function KnowledgeGraphView() {
       allNodes = allNodes.filter((n) => connected.has(n.id));
     }
 
-    return { graphData: { nodes: allNodes, links }, tagUniverse: tagUniverseMap };
+    // Build the cache key from everything that ACTUALLY affects the rendered
+    // graph: which nodes exist, with what label/colour/group/type, plus the
+    // link set, plus the rendering mode. Things like note `content`,
+    // `updatedAt`, or `contentText` don't move pixels here — and those are
+    // exactly the fields that change on every autosave keystroke.
+    const visKey = allNodes
+      .map((n) => `${n.id}|${n.title}|${n.color}|${n.group}|${n.type}`)
+      .sort()
+      .join("");
+    const linkKey = links
+      .map((l) => `${l.source}>${l.target}:${l.kind}`)
+      .sort()
+      .join(",");
+    const fullKey = `${visKey}${linkKey}${settings.mode}`;
+    if (stableGraphRef.current?.key === fullKey) {
+      return {
+        graphData: stableGraphRef.current.data,
+        tagUniverse: stableGraphRef.current.tagUniverse,
+      };
+    }
+    stableGraphRef.current = {
+      key: fullKey,
+      data: { nodes: allNodes, links },
+      tagUniverse: tagUniverseMap,
+    };
+    return { graphData: stableGraphRef.current.data, tagUniverse: tagUniverseMap };
   }, [notes, folders, tagsTable, settings, animationCutoff, deferredSearch]);
 
   useEffect(() => {

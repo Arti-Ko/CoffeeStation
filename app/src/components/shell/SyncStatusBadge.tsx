@@ -40,6 +40,12 @@ export function SyncStatusBadge() {
     if (resetToIdleTimerRef.current) clearTimeout(resetToIdleTimerRef.current);
   }, []);
 
+  // Rapid Cmd-Tab cycling can queue multiple blur pushes — the in-progress
+  // guard catches *concurrent* pushes, but as soon as one completes the
+  // next queued one fires. Reject any push that ran less than 5 s ago for
+  // the same reason; user-triggered pushes ignore this guard.
+  const lastPushAtRef = useRef<Map<string, number>>(new Map());
+
   const scheduleResetToIdle = useCallback(() => {
     if (resetToIdleTimerRef.current) clearTimeout(resetToIdleTimerRef.current);
     resetToIdleTimerRef.current = setTimeout(() => {
@@ -51,6 +57,12 @@ export function SyncStatusBadge() {
   const runPush = useCallback(async (reason: string) => {
     const c = cfgRef.current;
     if (!c || !c.repoUrl || !c.token || stateRef.current === "pushing") return;
+    // Throttle "background" pushes by reason (blur / idle / etc.). Manual
+    // push from a button passes a unique reason that's effectively never
+    // throttled.
+    const last = lastPushAtRef.current.get(reason) ?? 0;
+    if (Date.now() - last < 5000) return;
+    lastPushAtRef.current.set(reason, Date.now());
     setState("pushing");
     setMessage(`Push (${reason})…`);
     const res = await pushAll();

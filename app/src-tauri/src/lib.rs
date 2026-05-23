@@ -1015,29 +1015,76 @@ async fn git_commit_and_push(
         let _ = run_git(&["config", "user.email", email], &path);
     }
 
-    let add = run_git(&["add", "-A"], &path);
-    if !add.success {
-        return Ok(add);
+    // Legacy `_git/` subfolder from the pre-v0.2.4 layout still lives in
+    // some users' vaults as a nested .git directory, which git treats as
+    // a "dirty submodule". Add it to the local exclude so `add -A`/`status`
+    // ignore it; without this, every commit attempt fails with
+    // "modified: _git (modified content) no changes added to commit".
+    let exclude_path = path.join(".git").join("info").join("exclude");
+    if let Ok(existing) = tokio::fs::read_to_string(&exclude_path).await {
+        if !existing.lines().any(|l| l.trim() == "_git") {
+            let mut next = existing;
+            if !next.ends_with('\n') {
+                next.push('\n');
+            }
+            next.push_str("_git\n");
+            let _ = tokio::fs::write(&exclude_path, next).await;
+        }
+    } else if let Some(parent) = exclude_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+        let _ = tokio::fs::write(&exclude_path, "_git\n").await;
     }
-    let status = run_git(&["status", "--porcelain"], &path);
-    if status.stdout.trim().is_empty() {
-        return Ok(GitResult {
-            success: true,
-            stdout: "nothing to commit".into(),
-            stderr: String::new(),
-            command: "noop".into(),
-        });
+
+    let _ = run_git(&["add", "-A"], &path);
+
+    // Use `--ignore-submodules=all` so a dirty nested `_git` doesn't masquerade
+    // as a pending change and prevent the commit from being declared empty.
+    let status = run_git(
+        &["status", "--porcelain", "--ignore-submodules=all"],
+        &path,
+    );
+
+    let mut last = GitResult {
+        success: true,
+        stdout: String::new(),
+        stderr: String::new(),
+        command: "commit-and-push".into(),
+    };
+
+    if !status.stdout.trim().is_empty() {
+        let commit = run_git(&["commit", "-m", &message], &path);
+        if commit.success {
+            last.stdout.push_str(&commit.stdout);
+        } else {
+            // Commit failed — usually because of the submodule-marker case. We
+            // still want to push whatever IS already committed locally, so
+            // record the failure but proceed to push.
+            last.stderr.push_str(&commit.stderr);
+        }
+    } else {
+        last.stdout.push_str("nothing new to commit\n");
     }
-    let commit = run_git(&["commit", "-m", &message], &path);
-    if !commit.success {
-        return Ok(commit);
-    }
+
+    // Always attempt to push existing local commits to remote.
     let url = embed_token(&config.repo_url, &config.token);
     let _ = run_git(&["remote", "set-url", "origin", &url], &path);
     let _ = run_git(&["branch", "-M", "main"], &path);
     let push = run_git(&["push", "-u", "origin", "main"], &path);
     let _ = run_git(&["remote", "set-url", "origin", &config.repo_url], &path);
-    Ok(push)
+
+    if push.success {
+        last.success = true;
+        last.stdout.push_str(&push.stdout);
+    } else {
+        // If push genuinely failed (network, auth, conflict), surface that.
+        last.success = false;
+        if !last.stderr.is_empty() && !last.stderr.ends_with('\n') {
+            last.stderr.push('\n');
+        }
+        last.stderr.push_str(&push.stderr);
+    }
+    last.stdout.push_str(&push.stdout);
+    Ok(last)
 }
 
 #[tauri::command]

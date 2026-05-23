@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "@/lib/db/schema";
 import { isDesktop } from "@/lib/desktop/runtime";
+import { useApp } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Download, X, ArrowUpCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -30,21 +31,29 @@ interface UpdateState {
 export function UpdateModal() {
   const skippedRow = useLiveQuery(() => db.settings.get(SKIPPED_KEY));
   const skipped = (skippedRow?.value as string[] | undefined) ?? [];
+  const updateCheckNonce = useApp((s) => s.updateCheckNonce);
   const [available, setAvailable] = useState<UpdateState | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [dismissed, setDismissed] = useState(false);
 
-  // Check for an update once on mount. Tauri's updater plugin caches the
-  // result internally, so this stays cheap. Browser/dev runs are skipped.
+  // Re-checks on mount AND every time `requestUpdateCheck()` is called from
+  // somewhere else (e.g. Settings → Проверить обновление). When the user
+  // triggers manually we also surface a "you're up to date" toast — for the
+  // mount-time check we stay silent to avoid notification spam.
   useEffect(() => {
     if (!isDesktop()) return;
     let cancelled = false;
+    const isManual = updateCheckNonce > 0;
     (async () => {
       try {
         const { check } = await import("@tauri-apps/plugin-updater");
         const update = await check();
-        if (cancelled || !update) return;
+        if (cancelled) return;
+        if (!update) {
+          if (isManual) toast.success("Вы используете последнюю версию");
+          return;
+        }
         setAvailable({
           version: update.version,
           notes: update.body ?? null,
@@ -63,9 +72,11 @@ export function UpdateModal() {
             await relaunch();
           },
         });
+        // Manual trigger: forcibly re-show even if the user previously skipped
+        // or dismissed this version — they're explicitly asking to see it.
+        if (isManual) setDismissed(false);
       } catch (e) {
-        // Network down, no release yet, signature mismatch — silently no-op.
-        // The user can re-trigger via "Проверить обновления" in Settings (TBD).
+        if (isManual) toast.error("Не удалось проверить обновления", { description: String(e) });
         // eslint-disable-next-line no-console
         console.debug("[updater] check failed:", e);
       }
@@ -73,10 +84,10 @@ export function UpdateModal() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [updateCheckNonce]);
 
   if (!available || dismissed) return null;
-  if (skipped.includes(available.version)) return null;
+  if (skipped.includes(available.version) && updateCheckNonce === 0) return null;
 
   const skipThisVersion = async () => {
     const next = Array.from(new Set([...skipped, available.version]));

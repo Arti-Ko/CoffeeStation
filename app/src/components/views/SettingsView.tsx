@@ -354,6 +354,8 @@ export function SettingsView() {
             <Trash2 size={13} /> Удалить все локальные данные
           </Button>
         </Section>
+
+        <AboutSection />
       </div>
     </div>
   );
@@ -1082,5 +1084,61 @@ function NewNoteLocationPicker() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Bottom-of-Settings card showing the currently-running version and a manual
+ * "check for updates" button. Identifies the build via the Tauri-side
+ * `platform_info` command so it reflects what's actually installed, not what
+ * package.json says — they can diverge if the user is running an older binary
+ * after a downgrade.
+ */
+function AboutSection() {
+  const requestUpdateCheck = useApp((s) => s.requestUpdateCheck);
+  const [version, setVersion] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      if (!isDesktop()) {
+        setVersion("dev (web)");
+        return;
+      }
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const info = await invoke<{ version: string; platform: string; arch: string }>(
+          "platform_info",
+        );
+        setVersion(info.version);
+      } catch {
+        setVersion("?");
+      }
+    })();
+  }, []);
+
+  const onCheck = async () => {
+    setChecking(true);
+    requestUpdateCheck();
+    // The actual check runs inside UpdateModal; we just give the button a
+    // brief "checking…" state. UpdateModal surfaces its own toast/modal.
+    setTimeout(() => setChecking(false), 1500);
+  };
+
+  return (
+    <Section title="О приложении" description="Версия и обновления">
+      <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-bg-elev-1 px-3 py-2.5">
+        <div className="flex flex-col">
+          <div className="text-[11px] uppercase tracking-wider text-fg-subtle">Версия</div>
+          <div className="font-mono text-[13px] text-fg">
+            CoffeeStation <span className="text-accent">{version ?? "…"}</span>
+          </div>
+        </div>
+        <Button size="sm" variant="secondary" onClick={onCheck} disabled={checking}>
+          <RefreshCw size={12} className={checking ? "animate-spin" : ""} />
+          {checking ? "Проверяю…" : "Проверить обновление"}
+        </Button>
+      </div>
+    </Section>
   );
 }

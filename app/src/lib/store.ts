@@ -56,6 +56,12 @@ interface AppState {
 
   theme_tokens: ThemeTokens;
   setThemeTokens: (t: ThemeTokens) => void;
+
+  /** Bumping this counter from anywhere (e.g. Settings → Check for updates)
+   *  re-runs the updater check inside UpdateModal, bypassing dismissed-this-
+   *  session and skipped-version state for one round. */
+  updateCheckNonce: number;
+  requestUpdateCheck: () => void;
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -136,6 +142,9 @@ export const useApp = create<AppState>((set, get) => ({
         window.matchMedia("(prefers-color-scheme: dark)").matches);
     applyThemeTokens(t, isDark);
   },
+
+  updateCheckNonce: 0,
+  requestUpdateCheck: () => set((s) => ({ updateCheckNonce: s.updateCheckNonce + 1 })),
 }));
 
 export function applyTheme(theme: "light" | "dark" | "system") {

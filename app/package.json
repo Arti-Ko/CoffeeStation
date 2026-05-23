@@ -69,6 +69,7 @@
     "diff": "^9.0.0",
     "fuse.js": "^7.3.0",
     "gray-matter": "^4.0.3",
+    "highlight.js": "^11.11.1",
     "isomorphic-dompurify": "^3.14.0",
     "katex": "^0.16.47",
     "libsodium-wrappers": "^0.8.4",

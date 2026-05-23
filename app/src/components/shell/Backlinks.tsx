@@ -45,7 +45,7 @@ export function Backlinks({ noteId }: { noteId: string }) {
       [note?.links?.join("")],
     ) ?? [];
 
-  const { setView } = useApp();
+  const setView = useApp((s) => s.setView);
 
   if (!note) return <div className="p-4 text-sm text-fg-subtle">…</div>;
 

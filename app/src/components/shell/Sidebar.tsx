@@ -67,7 +67,11 @@ export function SidebarCollapsedRail() {
 }
 
 export function Sidebar() {
-  const { toggleSidebar, view, setCommandPaletteOpen } = useApp();
+  // Atomic selectors so this sidebar only re-renders when these specific
+  // fields change — not on every keystroke-induced store update.
+  const toggleSidebar = useApp((s) => s.toggleSidebar);
+  const view = useApp((s) => s.view);
+  const setCommandPaletteOpen = useApp((s) => s.setCommandPaletteOpen);
   const t = useT();
   const [tab, setTab] = useState<SidebarTab>("outline");
   const isNote = view.kind === "note";

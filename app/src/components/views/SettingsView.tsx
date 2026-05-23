@@ -56,7 +56,10 @@ import {
 } from "@/lib/sync/github";
 
 export function SettingsView() {
-  const { theme, setTheme, locale, setLocale } = useApp();
+  const theme = useApp((s) => s.theme);
+  const setTheme = useApp((s) => s.setTheme);
+  const locale = useApp((s) => s.locale);
+  const setLocale = useApp((s) => s.setLocale);
   const t = useT();
   const settings = useLiveQuery(() => db.settings.toArray()) ?? [];
   const get = (k: string, fallback?: unknown) => settings.find((s) => s.key === k)?.value ?? fallback;

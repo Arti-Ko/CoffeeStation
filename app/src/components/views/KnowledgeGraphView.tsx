@@ -1,55 +1,60 @@
 "use client";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import {
-  forceSimulation,
-  forceLink,
-  forceManyBody,
-  forceCenter,
-  forceCollide,
-  forceX,
-  forceY,
-  type Simulation,
-  type ForceLink,
-  type ForceManyBody,
-  type SimulationNodeDatum,
-  type SimulationLinkDatum,
-} from "d3-force";
-import { zoom as d3Zoom, zoomIdentity, type ZoomTransform } from "d3-zoom";
-import { select } from "d3-selection";
 import { db } from "@/lib/db/schema";
 import { useApp } from "@/lib/store";
+import { nanoid } from "nanoid";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Maximize2, ZoomIn, ZoomOut, Search, X } from "lucide-react";
+import {
+  Search,
+  X,
+  Box,
+  Square,
+  Plus,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
+import {
+  loadGraphSettings,
+  saveGraphSettings,
+  type GraphSettings,
+  type ColorGroup,
+} from "@/lib/graph/settings";
+import { parseQuery, folderChainFor } from "@/lib/graph/query";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
-interface GraphNode extends SimulationNodeDatum {
+// react-force-graph pulls Three.js for 3D — defer to client only.
+const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false }) as any;
+const ForceGraph3D = dynamic(() => import("react-force-graph-3d"), { ssr: false }) as any;
+
+interface RFGNode {
   id: string;
   title: string;
-  group: string;            // colour-group key (folder name / tag / etc.)
-  color: string;            // resolved CSS colour string
-  links: number;            // degree — drives node radius
-  type: "note" | "tag" | "ghost";  // ghost = wiki-link to a not-yet-created note
-  tags: string[];           // for filtering
-  spawnAt: number;          // monotonic ms when this node first appeared (drives fade-in)
+  group: string;
+  color: string;
+  size: number;
+  type: "note" | "tag" | "ghost";
+  tags: string[];
+  folderChain: string;
+  x?: number;
+  y?: number;
+  z?: number;
+  fx?: number | null;
+  fy?: number | null;
+  fz?: number | null;
 }
-interface GraphEdge extends SimulationLinkDatum<GraphNode> {
-  source: string | GraphNode;
-  target: string | GraphNode;
+interface RFGLink {
+  source: string;
+  target: string;
   kind: "link" | "tag";
 }
-
-// Tunables
-const NODE_BASE_RADIUS = 4;
-const NODE_LINK_BOOST = 0.9;
-const NODE_MAX_RADIUS = 16;
-const LABEL_FADE_ZOOM_IN = 1.2;
-const LABEL_FULL_ZOOM = 1.8;
-const HOVER_DIM = 0.18;
-const SEARCH_DIM = 0.12;
-
-type ColorBy = "folder" | "tag" | "uniform";
 
 export function KnowledgeGraphView() {
   const notes = useLiveQuery(() => db.notes.filter((n) => n.archivedAt == null).toArray()) ?? [];
@@ -58,65 +63,68 @@ export function KnowledgeGraphView() {
   const setView = useApp((s) => s.setView);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const graphRef = useRef<any>(null);
 
-  // ── Refs that survive re-renders ───────────────────────────────────
-  // The simulation is created ONCE per topology change, never on parameter
-  // changes — that's what stops the "jumping" effect: forces are updated
-  // in place, the simulation just gets a small kick.
-  const simRef = useRef<Simulation<GraphNode, GraphEdge> | null>(null);
-  const nodesRef = useRef<GraphNode[]>([]);
-  const edgesRef = useRef<GraphEdge[]>([]);
-  const adjacencyRef = useRef<Map<string, Set<string>>>(new Map());
-  const positionsRef = useRef<Map<string, { x: number; y: number; vx: number; vy: number }>>(new Map());
-  // Persist spawnAt per node id across renders so we don't reset the fade-in
-  // every time the live query refires.
-  const spawnCacheRef = useRef<Map<string, number>>(new Map());
-  const transformRef = useRef<ZoomTransform>(zoomIdentity);
-  const hoveredRef = useRef<GraphNode | null>(null);
-  const draggingRef = useRef<GraphNode | null>(null);
-  const searchRef = useRef<string>("");
-  const dprRef = useRef<number>(typeof window === "undefined" ? 1 : window.devicePixelRatio || 1);
-
-  // ── UI state (drives re-renders only when user changes a control) ──
   const [size, setSize] = useState({ w: 1200, h: 800 });
-  const [showOrphans, setShowOrphans] = useState(true);
-  const [showTags, setShowTags] = useState(false);
-  const [showGhosts, setShowGhosts] = useState(true);
-  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
-  const [colorBy, setColorBy] = useState<ColorBy>("folder");
-  const [linkDistance, setLinkDistance] = useState(90);
-  const [linkStrength, setLinkStrength] = useState(0.5);
-  const [charge, setCharge] = useState(-180);
-  const [centerStrength, setCenterStrength] = useState(0.05);
-  const [search, setSearch] = useState("");
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [stats, setStats] = useState({ nodes: 0, edges: 0 });
+  const [settings, setSettings] = useState<GraphSettings | null>(null);
+  const [stats, setStats] = useState({ nodes: 0, links: 0 });
+  const [hovered, setHovered] = useState<RFGNode | null>(null);
+  const [ghostPrompt, setGhostPrompt] = useState<{ title: string } | null>(null);
 
-  // ── Resize listener ────────────────────────────────────────────────
+  const [openFilters, setOpenFilters] = useState(true);
+  const [openGroups, setOpenGroups] = useState(false);
+  const [openDisplay, setOpenDisplay] = useState(false);
+  const [openForces, setOpenForces] = useState(false);
+
+  useEffect(() => {
+    loadGraphSettings().then(setSettings);
+  }, []);
+
   useEffect(() => {
     const update = () => {
       const el = containerRef.current;
       if (el) setSize({ w: el.clientWidth, h: el.clientHeight });
-      dprRef.current = window.devicePixelRatio || 1;
     };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
 
-  // Keep ref in sync — used by the canvas redraw to dim non-matches.
-  useEffect(() => {
-    searchRef.current = search.toLowerCase();
-  }, [search]);
+  const patch = useCallback((p: Partial<GraphSettings>) => {
+    setSettings((s) => (s ? { ...s, ...p } : s));
+    saveGraphSettings(p);
+  }, []);
 
-  // ── Build graph (memoised; result is structurally cheap to compare) ──
-  const graph = useMemo(() => {
+  // ── Build graph data ───────────────────────────────────────────────
+  const { graphData, tagUniverse } = useMemo(() => {
+    if (!settings) {
+      return {
+        graphData: { nodes: [] as RFGNode[], links: [] as RFGLink[] },
+        tagUniverse: new Map<string, number>(),
+      };
+    }
+
     const noteByTitle = new Map(notes.map((n) => [n.title.toLowerCase(), n]));
-    const folderById = new Map(folders.map((f) => [f.id, f]));
-    const tagColorByName = new Map(tagsTable.map((t) => [t.name, t.color]));
+    const tagColor = new Map(tagsTable.map((t) => [t.name, t.color]));
+    const queryFn = parseQuery(settings.search);
 
-    // Degree map (used for radius)
+    const groupPredicates = settings.groups.map((g) => ({
+      group: g,
+      pred: parseQuery(g.query),
+    }));
+
+    const colorFor = (
+      note: typeof notes[number],
+      folderChain: string,
+      fallback: string,
+    ): { color: string; group: string } => {
+      for (const { group, pred } of groupPredicates) {
+        if (pred(note, folderChain)) return { color: group.color, group: group.query };
+      }
+      const fc = folders.find((f) => f.id === note.folderId);
+      return { color: fc?.color ?? fallback, group: fc?.name ?? "Vault" };
+    };
+
     const degree = new Map<string, number>();
     notes.forEach((n) => {
       n.links.forEach((target) => {
@@ -127,595 +135,270 @@ export function KnowledgeGraphView() {
       });
     });
 
-    // Universe of tags in use (for filter chips)
-    const tagUniverse: Map<string, number> = new Map();
-    notes.forEach((n) => n.tags.forEach((t) => tagUniverse.set(t, (tagUniverse.get(t) ?? 0) + 1)));
+    const tagUniverseMap = new Map<string, number>();
+    notes.forEach((n) =>
+      n.tags.forEach((t) => tagUniverseMap.set(t, (tagUniverseMap.get(t) ?? 0) + 1)),
+    );
 
-    const pickColor = (n: typeof notes[number]): string => {
-      if (colorBy === "uniform") return "var(--fg-muted)";
-      if (colorBy === "tag") {
-        const t = n.tags[0];
-        return t ? (tagColorByName.get(t) ?? "var(--accent)") : "var(--fg-subtle)";
-      }
-      return folderById.get(n.folderId ?? "")?.color ?? "var(--fg-subtle)";
-    };
-
-    const groupOf = (n: typeof notes[number]): string => {
-      if (colorBy === "tag") return n.tags[0] ?? "(без тега)";
-      return folderById.get(n.folderId ?? "")?.name ?? "Vault";
-    };
-
-    const now = performance.now();
-    // Spawn timestamps are kept across renders in a ref so a node that
-    // existed last frame keeps its original spawnAt. New nodes get `now`
-    // and fade in via the canvas draw loop.
-    const cache = spawnCacheRef.current;
-
-    let noteNodes: GraphNode[] = notes.map((n) => {
-      const id = n.id;
-      const spawnAt = cache.get(id) ?? now;
-      cache.set(id, spawnAt);
-      return {
-        id,
+    const noteNodes: RFGNode[] = [];
+    for (const n of notes) {
+      const folderChain = folderChainFor(n.folderId, folders);
+      if (!queryFn(n, folderChain)) continue;
+      const { color, group } = colorFor(n, folderChain, "#94a3b8");
+      const d = degree.get(n.id) ?? 0;
+      noteNodes.push({
+        id: n.id,
         title: n.title || "Untitled",
-        group: groupOf(n),
-        color: pickColor(n),
-        links: degree.get(id) ?? 0,
-        type: "note" as const,
+        group,
+        color,
+        size: Math.min(16, 4 + Math.sqrt(d) * 0.9),
+        type: "note",
         tags: n.tags,
-        spawnAt,
-      };
-    });
-
-    // Tag filter: keep only notes that have AT LEAST ONE selected tag
-    // (when filter is non-empty). Empty filter = no constraint.
-    if (tagFilter.size > 0) {
-      noteNodes = noteNodes.filter((n) => n.tags.some((t) => tagFilter.has(t)));
+        folderChain,
+      });
     }
 
-    let tagNodes: GraphNode[] = [];
-    if (showTags) {
-      const usedTags = new Set<string>();
-      noteNodes.forEach((n) => n.tags.forEach((t) => usedTags.add(t)));
-      tagNodes = Array.from(usedTags).map((t) => {
-        const id = "tag:" + t;
-        const spawnAt = cache.get(id) ?? now;
-        cache.set(id, spawnAt);
-        return {
-          id,
+    const tagNodes: RFGNode[] = [];
+    if (settings.showTags) {
+      const used = new Set<string>();
+      noteNodes.forEach((n) => n.tags.forEach((t) => used.add(t)));
+      for (const t of used) {
+        tagNodes.push({
+          id: "tag:" + t,
           title: "#" + t,
-          group: "tag",
-          color: tagColorByName.get(t) ?? "var(--accent)",
-          links: 0,
-          type: "tag" as const,
+          group: "(tag)",
+          color: tagColor.get(t) ?? "var(--accent)",
+          size: 4,
+          type: "tag",
           tags: [t],
-          spawnAt,
-        };
-      });
+          folderChain: "",
+        });
+      }
     }
 
-    // Ghost nodes: every wiki-link target that doesn't resolve to an
-    // existing note. Same visual model as Obsidian — semi-transparent
-    // dashed-outline circles. They keep the user honest about broken
-    // references.
-    const ghostNodes: GraphNode[] = [];
-    if (showGhosts) {
+    const ghostNodes: RFGNode[] = [];
+    if (settings.showGhosts && !settings.showExistingOnly) {
       const unresolved = new Set<string>();
-      notes.forEach((n) => {
-        n.links.forEach((target) => {
+      for (const origin of noteNodes) {
+        const note = notes.find((n) => n.id === origin.id);
+        if (!note) continue;
+        for (const target of note.links) {
           if (!noteByTitle.has(target.toLowerCase())) unresolved.add(target);
-        });
-      });
-      unresolved.forEach((title) => {
-        const id = "ghost:" + title.toLowerCase();
-        const spawnAt = cache.get(id) ?? now;
-        cache.set(id, spawnAt);
+        }
+      }
+      for (const title of unresolved) {
         ghostNodes.push({
-          id,
+          id: "ghost:" + title.toLowerCase(),
           title,
           group: "(не создано)",
           color: "var(--fg-subtle)",
-          links: 0,
-          type: "ghost" as const,
+          size: 3.5,
+          type: "ghost",
           tags: [],
-          spawnAt,
+          folderChain: "",
         });
-      });
+      }
     }
 
-    const allNodeIds = new Set(
-      [...noteNodes, ...tagNodes, ...ghostNodes].map((n) => n.id),
-    );
-    const edgeList: GraphEdge[] = [];
-    const adj = new Map<string, Set<string>>();
-    const link = (a: string, b: string, kind: GraphEdge["kind"]) => {
-      if (!allNodeIds.has(a) || !allNodeIds.has(b)) return;
-      edgeList.push({ source: a, target: b, kind });
-      if (!adj.has(a)) adj.set(a, new Set());
-      if (!adj.has(b)) adj.set(b, new Set());
-      adj.get(a)!.add(b);
-      adj.get(b)!.add(a);
-    };
-
-    notes.forEach((n) => {
-      if (!allNodeIds.has(n.id)) return;
-      n.links.forEach((targetTitle) => {
-        const target = noteByTitle.get(targetTitle.toLowerCase());
-        if (target) {
-          link(n.id, target.id, "link");
-        } else if (showGhosts) {
-          link(n.id, "ghost:" + targetTitle.toLowerCase(), "link");
+    const allIds = new Set([...noteNodes, ...tagNodes, ...ghostNodes].map((n) => n.id));
+    const links: RFGLink[] = [];
+    for (const origin of noteNodes) {
+      const note = notes.find((n) => n.id === origin.id);
+      if (!note) continue;
+      for (const target of note.links) {
+        const t = noteByTitle.get(target.toLowerCase());
+        if (t && allIds.has(t.id)) {
+          links.push({ source: note.id, target: t.id, kind: "link" });
+        } else if (settings.showGhosts && !settings.showExistingOnly) {
+          links.push({ source: note.id, target: "ghost:" + target.toLowerCase(), kind: "link" });
         }
-      });
-      if (showTags) n.tags.forEach((t) => link(n.id, "tag:" + t, "tag"));
-    });
+      }
+      if (settings.showTags) {
+        for (const tg of note.tags) {
+          const id = "tag:" + tg;
+          if (allIds.has(id)) links.push({ source: note.id, target: id, kind: "tag" });
+        }
+      }
+    }
 
-    let allNodes = [...noteNodes, ...tagNodes, ...ghostNodes];
-    if (!showOrphans) {
+    let allNodes: RFGNode[] = [...noteNodes, ...tagNodes, ...ghostNodes];
+    if (!settings.showOrphans) {
       const connected = new Set<string>();
-      edgeList.forEach((e) => {
-        const s = typeof e.source === "string" ? e.source : e.source.id;
-        const t = typeof e.target === "string" ? e.target : e.target.id;
-        connected.add(s);
-        connected.add(t);
+      links.forEach((l) => {
+        connected.add(l.source);
+        connected.add(l.target);
       });
       allNodes = allNodes.filter((n) => connected.has(n.id));
     }
 
-    // Topology signature: changes only when set-of-ids or set-of-edges
-    // actually changes. Sliders and search DO NOT bump this.
-    const nodeSig = allNodes.map((n) => n.id).sort().join("|");
-    const edgeSig = edgeList
-      .map((e) => {
-        const s = typeof e.source === "string" ? e.source : e.source.id;
-        const t = typeof e.target === "string" ? e.target : e.target.id;
-        return s + "→" + t;
-      })
-      .sort()
-      .join(",");
+    return { graphData: { nodes: allNodes, links }, tagUniverse: tagUniverseMap };
+  }, [notes, folders, tagsTable, settings]);
 
-    return {
-      nodes: allNodes,
-      edges: edgeList,
-      adjacency: adj,
-      tagUniverse,
-      topologyKey: `${nodeSig}::${edgeSig}::${colorBy}::${showGhosts ? "g" : "n"}`,
-    };
-  }, [notes, folders, tagsTable, showOrphans, showTags, showGhosts, tagFilter, colorBy]);
-
-  // ── Mirror live colours/visuals onto already-simulated nodes ───────
-  // When colorBy or tag-table changes we just want recolour, not relayout.
   useEffect(() => {
-    if (!nodesRef.current.length) return;
-    const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-    for (const liveNode of nodesRef.current) {
-      const fresh = byId.get(liveNode.id);
-      if (fresh) {
-        liveNode.color = fresh.color;
-        liveNode.group = fresh.group;
-        liveNode.tags = fresh.tags;
-      }
-    }
-  }, [graph]);
+    setStats({ nodes: graphData.nodes.length, links: graphData.links.length });
+  }, [graphData.nodes.length, graphData.links.length]);
 
-  // ── Topology lifecycle: rebuild simulation only when shape changes ─
+  // Apply force tunables in place when sliders change
   useEffect(() => {
-    setStats({ nodes: graph.nodes.length, edges: graph.edges.length });
-    adjacencyRef.current = graph.adjacency;
-
-    // Seed positions from cache (previous tick of same node id) OR center.
-    const cx = size.w / 2;
-    const cy = size.h / 2;
-    const cache = positionsRef.current;
-    for (const n of graph.nodes) {
-      const cached = cache.get(n.id);
-      if (cached) {
-        n.x = cached.x;
-        n.y = cached.y;
-        n.vx = cached.vx;
-        n.vy = cached.vy;
-      } else {
-        // Distribute new nodes around the existing cloud rather than at center.
-        const a = Math.random() * Math.PI * 2;
-        const r = 60 + Math.random() * 60;
-        n.x = cx + Math.cos(a) * r;
-        n.y = cy + Math.sin(a) * r;
-        n.vx = 0;
-        n.vy = 0;
-      }
+    if (!settings || !graphRef.current) return;
+    const g = graphRef.current;
+    try {
+      g.d3Force?.("charge")?.strength?.(settings.repelForce);
+      g.d3Force?.("link")?.distance?.(settings.linkDistance).strength?.(settings.linkForce);
+      g.d3ReheatSimulation?.();
+    } catch {
+      /* not ready */
     }
+  }, [settings?.repelForce, settings?.linkDistance, settings?.linkForce, settings?.mode]);
 
-    nodesRef.current = graph.nodes;
-    edgesRef.current = graph.edges;
-
-    // Tear down previous simulation if any.
-    simRef.current?.stop();
-
-    const sim = forceSimulation<GraphNode>(graph.nodes)
-      .force(
-        "link",
-        forceLink<GraphNode, GraphEdge>(graph.edges)
-          .id((d) => d.id)
-          .distance(linkDistance)
-          .strength((e) => (e.kind === "tag" ? 0.2 : linkStrength)),
-      )
-      .force(
-        "charge",
-        forceManyBody<GraphNode>().strength((n) => charge * (1 + Math.log2(n.links + 1) * 0.25)),
-      )
-      .force("center", forceCenter<GraphNode>(cx, cy).strength(centerStrength))
-      .force("x", forceX<GraphNode>(cx).strength(0.03))
-      .force("y", forceY<GraphNode>(cy).strength(0.03))
-      .force(
-        "collide",
-        forceCollide<GraphNode>().radius((n) => nodeRadius(n) + 3).strength(0.9),
-      )
-      .alphaDecay(0.03)
-      .velocityDecay(0.45);
-
-    sim.on("tick", () => {
-      // Cache positions so filter toggles preserve layout.
-      for (const n of graph.nodes) {
-        cache.set(n.id, { x: n.x ?? cx, y: n.y ?? cy, vx: n.vx ?? 0, vy: n.vy ?? 0 });
-      }
-    });
-
-    simRef.current = sim;
-
-    return () => {
-      sim.stop();
-    };
-    // IMPORTANT: only on topology change. Param changes are handled in the
-    // separate effect below so the simulation isn't recreated.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [graph.topologyKey, size.w, size.h]);
-
-  // ── Update forces in place when sliders change ──────────────────────
-  useEffect(() => {
-    const sim = simRef.current;
-    if (!sim) return;
-    const linkForce = sim.force("link") as ForceLink<GraphNode, GraphEdge> | undefined;
-    if (linkForce) {
-      linkForce
-        .distance(linkDistance)
-        .strength((e) => (e.kind === "tag" ? 0.2 : linkStrength));
+  const adjacency = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const l of graphData.links) {
+      if (!m.has(l.source)) m.set(l.source, new Set());
+      if (!m.has(l.target)) m.set(l.target, new Set());
+      m.get(l.source)!.add(l.target);
+      m.get(l.target)!.add(l.source);
     }
-    const chargeForce = sim.force("charge") as ForceManyBody<GraphNode> | undefined;
-    if (chargeForce) {
-      chargeForce.strength((n) => charge * (1 + Math.log2(n.links + 1) * 0.25));
-    }
-    const center = sim.force("center") as { strength: (s: number) => unknown } | undefined;
-    if (center && typeof center.strength === "function") center.strength(centerStrength);
-    // Small reheat — enough to settle to new equilibrium, not enough to jump.
-    sim.alpha(0.4).restart();
-  }, [linkDistance, linkStrength, charge, centerStrength]);
+    return m;
+  }, [graphData.links]);
 
-  // ── Canvas redraw loop ──────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const root = getComputedStyle(document.documentElement);
-    let raf = 0;
-
-    const draw = () => {
-      const dpr = dprRef.current;
-      const w = size.w;
-      const h = size.h;
-      if (canvas.width !== w * dpr) canvas.width = w * dpr;
-      if (canvas.height !== h * dpr) canvas.height = h * dpr;
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-
-      const t = transformRef.current;
-      ctx.translate(t.x, t.y);
-      ctx.scale(t.k, t.k);
-
-      const hovered = hoveredRef.current;
-      const neighborSet = hovered ? adjacencyRef.current.get(hovered.id) ?? new Set<string>() : null;
-      const q = searchRef.current;
-      const hasSearch = q.length > 0;
-
-      const fgMuted = root.getPropertyValue("--fg-muted").trim() || "#9ca3af";
-      const fg = root.getPropertyValue("--fg").trim() || "#e5e7eb";
-      const bg = root.getPropertyValue("--bg").trim() || "#0f1115";
-      const border = root.getPropertyValue("--border-strong").trim() || "#374151";
-      const accent = root.getPropertyValue("--accent").trim() || "#3b82f6";
-
-      const liveNodes = nodesRef.current;
-      const liveEdges = edgesRef.current;
-
-      const matchesSearch = (n: GraphNode) =>
-        !hasSearch
-          ? true
-          : n.title.toLowerCase().includes(q) || n.tags.some((t) => t.toLowerCase().includes(q));
-
-      const isDim = (n: GraphNode) => {
-        // Hover dims everyone not connected to the hovered node
-        if (hovered) {
-          if (n.id === hovered.id) return false;
-          if (neighborSet && neighborSet.has(n.id)) return false;
-          return true;
-        }
-        // Search dims everyone not matching the query
-        if (hasSearch && !matchesSearch(n)) return true;
-        return false;
-      };
-
-      // Edges first
-      ctx.lineCap = "round";
-      const nowEdgeMs = performance.now();
-      for (const e of liveEdges) {
-        const s = e.source as GraphNode;
-        const tgt = e.target as GraphNode;
-        if (s.x == null || tgt.x == null) continue;
-        const sDim = isDim(s);
-        const tDim = isDim(tgt);
-        const dim = sDim && tDim;
-        const onPath = hovered && (s.id === hovered.id || tgt.id === hovered.id);
-        ctx.strokeStyle = onPath ? accent : e.kind === "tag" ? accent : border;
-        // Edge fade-in matches the youngest of its two endpoints — links
-        // appear with the node that brought them in.
-        const youngest = Math.min(s.spawnAt, tgt.spawnAt);
-        const t01 = Math.min(1, Math.max(0, (nowEdgeMs - youngest) / 500));
-        const spawn = 1 - Math.pow(1 - t01, 3);
-        const base = dim
-          ? hovered
-            ? HOVER_DIM
-            : SEARCH_DIM
-          : onPath
-            ? 0.9
-            : e.kind === "tag"
-              ? 0.35
-              : tgt.type === "ghost" || s.type === "ghost"
-                ? 0.3
-                : 0.55;
-        ctx.globalAlpha = base * spawn;
-        ctx.lineWidth = onPath ? 1.8 / t.k : e.kind === "tag" ? 0.7 / t.k : 1 / t.k;
-        if (tgt.type === "ghost" || s.type === "ghost") {
-          ctx.setLineDash([3 / t.k, 2 / t.k]);
-        }
-        ctx.beginPath();
-        ctx.moveTo(s.x!, s.y!);
-        ctx.lineTo(tgt.x!, tgt.y!);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // Nodes
-      const nowMs = performance.now();
-      for (const n of liveNodes) {
-        if (n.x == null) continue;
-        const dim = isDim(n);
-        const baseR = nodeRadius(n);
-
-        // Spawn animation: opacity 0→1 + scale 0.4→1 over 500ms. Cubic
-        // ease-out so it feels punchy at the start then settles.
-        const t01 = Math.min(1, Math.max(0, (nowMs - n.spawnAt) / 500));
-        const eased = 1 - Math.pow(1 - t01, 3);
-        const spawnAlpha = eased;
-        const spawnScale = 0.4 + eased * 0.6;
-        const r = baseR * spawnScale;
-
-        ctx.globalAlpha = (dim ? (hovered ? HOVER_DIM : SEARCH_DIM) : 1) * spawnAlpha;
-
-        if (
-          hovered &&
-          (n.id === hovered.id || (neighborSet && neighborSet.has(n.id)))
-        ) {
-          ctx.beginPath();
-          ctx.arc(n.x!, n.y!, r + 3 / t.k, 0, Math.PI * 2);
-          ctx.fillStyle = withAlpha(accent, 0.18);
-          ctx.fill();
-        }
-        if (hasSearch && matchesSearch(n) && !hovered) {
-          ctx.beginPath();
-          ctx.arc(n.x!, n.y!, r + 3 / t.k, 0, Math.PI * 2);
-          ctx.fillStyle = withAlpha(accent, 0.15);
-          ctx.fill();
-        }
-
-        if (n.type === "ghost") {
-          // Dashed-outline empty circle: signals "link target doesn't exist"
-          // without taking visual weight from real notes.
-          ctx.setLineDash([3 / t.k, 2 / t.k]);
-          ctx.beginPath();
-          ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2);
-          ctx.lineWidth = 1.2 / t.k;
-          ctx.strokeStyle = resolveColor(n.color, root) || fgMuted;
-          ctx.globalAlpha = (ctx.globalAlpha) * 0.7;
-          ctx.stroke();
-          ctx.setLineDash([]);
-        } else {
-          ctx.beginPath();
-          ctx.arc(n.x!, n.y!, r, 0, Math.PI * 2);
-          ctx.fillStyle = resolveColor(n.color, root) || fgMuted;
-          ctx.fill();
-          ctx.lineWidth = 1.5 / t.k;
-          ctx.strokeStyle = bg;
-          ctx.stroke();
-        }
-      }
-
-      // Labels
-      const labelOpacity = Math.max(
-        0,
-        Math.min(1, (t.k - LABEL_FADE_ZOOM_IN) / (LABEL_FULL_ZOOM - LABEL_FADE_ZOOM_IN)),
-      );
-      const showAnyLabels = labelOpacity > 0 || hovered || hasSearch;
-      if (showAnyLabels) {
-        ctx.font = `${Math.max(9 / t.k, 9)}px var(--font-sans), system-ui, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        for (const n of liveNodes) {
-          if (n.x == null) continue;
-          const isHl =
-            (hovered && (n.id === hovered.id || (neighborSet && neighborSet.has(n.id)))) ||
-            (hasSearch && matchesSearch(n));
-          const baseA = isHl ? 1 : labelOpacity;
-          if (baseA <= 0) continue;
-          if ((hovered || hasSearch) && !isHl && labelOpacity <= 0) continue;
-          ctx.globalAlpha = isHl ? 1 : baseA * (hovered || hasSearch ? HOVER_DIM : 1);
-          ctx.fillStyle = isHl ? fg : fgMuted;
-          const label = n.title.length > 28 ? n.title.slice(0, 28) + "…" : n.title;
-          ctx.fillText(label, n.x!, n.y! + nodeRadius(n) + 3 / t.k);
-        }
-      }
-
-      ctx.globalAlpha = 1;
-      raf = requestAnimationFrame(draw);
-    };
-
-    raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
-  }, [size.w, size.h]);
-
-  // ── Pan / zoom (d3-zoom, cursor-anchored) ───────────────────────────
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const sel = select(canvas);
-    const zoomBehavior = d3Zoom<HTMLCanvasElement, unknown>()
-      .scaleExtent([0.15, 4])
-      .filter((event) => {
-        if (event.type === "wheel") return true;
-        if (event.type === "mousedown" || event.type === "touchstart") {
-          return !pickNode(
-            event as MouseEvent | TouchEvent,
-            canvas,
-            nodesRef.current,
-            transformRef.current,
-          );
-        }
-        return true;
-      })
-      .on("zoom", (event) => {
-        transformRef.current = event.transform;
-        setZoomLevel(event.transform.k);
-      });
-    sel.call(zoomBehavior);
-    (canvas as unknown as { __zoom?: typeof zoomBehavior }).__zoom = zoomBehavior;
-    return () => {
-      sel.on(".zoom", null);
-    };
-  }, []);
-
-  // ── Pointer interactions ────────────────────────────────────────────
-  const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const t = transformRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left - t.x) / t.k;
-    const my = (e.clientY - rect.top - t.y) / t.k;
-
-    if (draggingRef.current) {
-      draggingRef.current.fx = mx;
-      draggingRef.current.fy = my;
-      simRef.current?.alphaTarget(0.25).restart();
-      return;
-    }
-    const hit = hitTest(nodesRef.current, mx, my);
-    if (hit?.id !== hoveredRef.current?.id) {
-      hoveredRef.current = hit;
-      canvas.style.cursor = hit ? "pointer" : "grab";
-    }
-  }, []);
-
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const t = transformRef.current;
-    const rect = canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left - t.x) / t.k;
-    const my = (e.clientY - rect.top - t.y) / t.k;
-    const hit = hitTest(nodesRef.current, mx, my);
-    if (hit) {
-      draggingRef.current = hit;
-      hit.fx = mx;
-      hit.fy = my;
-      simRef.current?.alphaTarget(0.25).restart();
-      canvas.setPointerCapture(e.pointerId);
-      canvas.style.cursor = "grabbing";
-    }
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    const canvas = canvasRef.current;
-    const dragged = draggingRef.current;
-    if (dragged) {
-      dragged.fx = null;
-      dragged.fy = null;
-      simRef.current?.alphaTarget(0);
-      draggingRef.current = null;
-      if (canvas) canvas.style.cursor = "grab";
-    }
-  }, []);
-
-  const onDoubleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const t = transformRef.current;
-      const rect = canvas.getBoundingClientRect();
-      const mx = (e.clientX - rect.left - t.x) / t.k;
-      const my = (e.clientY - rect.top - t.y) / t.k;
-      const hit = hitTest(nodesRef.current, mx, my);
-      if (hit?.type === "note") setView({ kind: "note", id: hit.id });
+  const onNodeClick = useCallback(
+    (n: any) => {
+      const node = n as RFGNode;
+      if (node.type === "note") setView({ kind: "note", id: node.id });
+      else if (node.type === "ghost") setGhostPrompt({ title: node.title });
     },
     [setView],
   );
 
-  // Programmatic zoom
-  const zoomBy = (factor: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const z = (
-      canvas as unknown as { __zoom?: ReturnType<typeof d3Zoom<HTMLCanvasElement, unknown>> }
-    ).__zoom;
-    if (z) z.scaleBy(select(canvas), factor);
-  };
-  const resetView = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const z = (
-      canvas as unknown as { __zoom?: ReturnType<typeof d3Zoom<HTMLCanvasElement, unknown>> }
-    ).__zoom;
-    if (z) z.transform(select(canvas), zoomIdentity);
-  };
+  // 2D custom node paint
+  const paint2D = useCallback(
+    (n: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const node = n as RFGNode;
+      if (!settings) return;
+      const baseR = node.size * settings.nodeSize;
+      const hoveredId = hovered?.id;
+      const neighbours = hoveredId ? adjacency.get(hoveredId) : null;
+      const isHover = hoveredId === node.id;
+      const isNeighbor = !!(neighbours && neighbours.has(node.id));
+      const dim = hoveredId && !isHover && !isNeighbor;
 
-  // ── Sidebar helpers ─────────────────────────────────────────────────
-  const groups = useMemo(() => {
-    const map = new Map<string, string>();
-    graph.nodes.forEach((n) => map.set(n.group, n.color));
-    return Array.from(map.entries());
-  }, [graph]);
+      ctx.globalAlpha = dim ? 0.15 : 1;
 
-  const allTags = useMemo(
-    () =>
-      Array.from(graph.tagUniverse.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 60),
-    [graph.tagUniverse],
+      if (isHover || isNeighbor) {
+        ctx.beginPath();
+        ctx.arc(node.x!, node.y!, baseR + 3 / globalScale, 0, Math.PI * 2);
+        ctx.fillStyle = withAlpha(getCss("--accent", "#3b82f6"), 0.2);
+        ctx.fill();
+      }
+
+      if (node.type === "ghost") {
+        ctx.setLineDash([3 / globalScale, 2 / globalScale]);
+        ctx.beginPath();
+        ctx.arc(node.x!, node.y!, baseR, 0, Math.PI * 2);
+        ctx.lineWidth = 1.2 / globalScale;
+        ctx.strokeStyle = resolveColor(node.color) || "#94a3b8";
+        ctx.globalAlpha *= 0.65;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.beginPath();
+        ctx.arc(node.x!, node.y!, baseR, 0, Math.PI * 2);
+        ctx.fillStyle = resolveColor(node.color) || "#94a3b8";
+        ctx.fill();
+        ctx.lineWidth = 1.5 / globalScale;
+        ctx.strokeStyle = getCss("--bg", "#0f1115");
+        ctx.stroke();
+      }
+
+      const labelOpacity = Math.max(
+        0,
+        Math.min(1, (globalScale - settings.textFadeThreshold) / 0.6),
+      );
+      if (labelOpacity > 0 || isHover || isNeighbor) {
+        const fontPx = Math.max(9 / globalScale, 9);
+        ctx.font = `${fontPx}px var(--font-sans), system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.globalAlpha = isHover || isNeighbor ? 1 : labelOpacity;
+        ctx.fillStyle =
+          isHover || isNeighbor ? getCss("--fg", "#e5e7eb") : getCss("--fg-muted", "#9ca3af");
+        const label = node.title.length > 28 ? node.title.slice(0, 28) + "…" : node.title;
+        ctx.fillText(label, node.x!, node.y! + baseR + 3 / globalScale);
+      }
+      ctx.globalAlpha = 1;
+    },
+    [adjacency, hovered, settings],
   );
 
-  const toggleTagFilter = (tag: string) => {
-    setTagFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(tag)) next.delete(tag);
-      else next.add(tag);
-      return next;
+  const pointerArea2D = useCallback((n: any, color: string, ctx: CanvasRenderingContext2D) => {
+    const node = n as RFGNode;
+    if (node.x == null || node.y == null || !settings) return;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, node.size * settings.nodeSize + 2, 0, Math.PI * 2);
+    ctx.fill();
+  }, [settings]);
+
+  const linkColor = useCallback(
+    (l: any): string => {
+      const link = l as RFGLink;
+      if (!settings) return "var(--border-strong)";
+      const hoveredId = hovered?.id;
+      if (hoveredId) {
+        const sId = typeof link.source === "string" ? link.source : (link.source as any).id;
+        const tId = typeof link.target === "string" ? link.target : (link.target as any).id;
+        if (sId === hoveredId || tId === hoveredId) {
+          return getCss("--accent", "#3b82f6");
+        }
+      }
+      if (settings.lineColorWithGroup) {
+        const sId = typeof link.source === "string" ? link.source : (link.source as any).id;
+        const src = graphData.nodes.find((n) => n.id === sId);
+        if (src) return withAlpha(resolveColor(src.color), 0.55);
+      }
+      if (link.kind === "tag") return withAlpha(getCss("--accent", "#3b82f6"), 0.45);
+      return withAlpha(getCss("--border-strong", "#374151"), 0.6);
+    },
+    [hovered, graphData.nodes, settings],
+  );
+
+  const createFromGhost = async (title: string) => {
+    const id = nanoid(10);
+    await db.notes.add({
+      id,
+      title,
+      content: "<p></p>",
+      contentText: "",
+      type: "note",
+      folderId: null,
+      tags: [],
+      links: [],
+      attachments: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      archivedAt: null,
+      pinned: false,
     });
+    setGhostPrompt(null);
+    setView({ kind: "note", id });
+    toast.success(`Создана: «${title}»`);
   };
+
+  if (!settings) {
+    return (
+      <div className="flex h-full items-center justify-center text-fg-subtle">Загрузка графа…</div>
+    );
+  }
+
+  const topTags = Array.from(tagUniverse.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 30);
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-6 py-3">
-        <div>
+      <header className="flex items-center justify-between border-b border-border px-6 py-3 gap-3">
+        <div className="shrink-0">
           <h2
             className="text-xl font-semibold tracking-tight"
             style={{ fontFamily: "var(--font-serif)" }}
@@ -723,290 +406,367 @@ export function KnowledgeGraphView() {
             Граф знаний
           </h2>
           <p className="text-xs text-fg-subtle mt-0.5">
-            {stats.nodes} узлов · {stats.edges} связей · масштаб{" "}
-            {Math.round(zoomLevel * 100)}%
+            {stats.nodes} узлов · {stats.links} связей · {settings.mode.toUpperCase()}
           </p>
         </div>
-        <div className="relative w-64">
-          <Search
-            size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle"
-          />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Поиск по узлам и тегам…"
-            className="pl-7 pr-7 h-8 text-[12px]"
-          />
-          {search && (
+
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-md border border-border overflow-hidden">
             <button
-              onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-subtle hover:text-fg"
-              title="Очистить"
+              onClick={() => patch({ mode: "2d" })}
+              className={cn(
+                "px-3 py-1 text-[11.5px] flex items-center gap-1 transition-colors",
+                settings.mode === "2d"
+                  ? "bg-accent-soft text-accent"
+                  : "bg-bg-elev-1 text-fg-muted hover:bg-bg-elev-2",
+              )}
             >
-              <X size={12} />
+              <Square size={11} /> 2D
             </button>
-          )}
+            <button
+              onClick={() => patch({ mode: "3d" })}
+              className={cn(
+                "px-3 py-1 text-[11.5px] flex items-center gap-1 transition-colors border-l border-border",
+                settings.mode === "3d"
+                  ? "bg-accent-soft text-accent"
+                  : "bg-bg-elev-1 text-fg-muted hover:bg-bg-elev-2",
+              )}
+            >
+              <Box size={11} /> 3D
+            </button>
+          </div>
+
+          <div className="relative w-64">
+            <Search
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-subtle pointer-events-none"
+            />
+            <Input
+              value={settings.search}
+              onChange={(e) => patch({ search: e.target.value })}
+              placeholder="tag:foo path:Work line:hello"
+              className="pl-7 pr-7 h-8 text-[12px]"
+            />
+            {settings.search && (
+              <button
+                onClick={() => patch({ search: "" })}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-subtle hover:text-fg"
+                title="Очистить"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
       <div className="flex flex-1 min-h-0">
-        <div
-          ref={containerRef}
-          className="relative flex-1 overflow-hidden bg-bg"
-          style={{
-            backgroundImage:
-              "radial-gradient(circle at 50% 50%, oklch(50% 0.01 250 / 0.05) 1px, transparent 1px)",
-            backgroundSize: "24px 24px",
-          }}
-        >
-          <canvas
-            ref={canvasRef}
-            className="absolute inset-0"
-            style={{ cursor: "grab", touchAction: "none" }}
-            onPointerMove={onPointerMove}
-            onPointerDown={onPointerDown}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onDoubleClick={onDoubleClick}
-          />
-
-          <div className="absolute bottom-3 right-3 flex flex-col gap-0.5 rounded-md border border-border bg-bg-elev-1 p-1 shadow-lg">
-            <Button size="icon-sm" variant="ghost" onClick={() => zoomBy(1.3)} title="Приблизить">
-              <ZoomIn size={13} />
-            </Button>
-            <Button size="icon-sm" variant="ghost" onClick={() => zoomBy(1 / 1.3)} title="Отдалить">
-              <ZoomOut size={13} />
-            </Button>
-            <Button size="icon-sm" variant="ghost" onClick={resetView} title="Сбросить вид">
-              <Maximize2 size={13} />
-            </Button>
-          </div>
+        <div ref={containerRef} className="relative flex-1 overflow-hidden bg-bg">
+          {settings.mode === "2d" ? (
+            <ForceGraph2D
+              ref={graphRef}
+              width={size.w}
+              height={size.h}
+              graphData={graphData}
+              backgroundColor="rgba(0,0,0,0)"
+              nodeCanvasObject={paint2D}
+              nodePointerAreaPaint={pointerArea2D}
+              linkColor={linkColor}
+              linkWidth={(l: any) => {
+                const link = l as RFGLink;
+                const base = link.kind === "tag" ? 0.7 : 1;
+                return base * settings.linkThickness;
+              }}
+              linkDirectionalArrowLength={settings.arrows ? 4 : 0}
+              linkDirectionalArrowRelPos={1}
+              cooldownTicks={300}
+              d3AlphaDecay={0.025}
+              d3VelocityDecay={0.4}
+              enableNodeDrag={true}
+              enableZoomInteraction={true}
+              enablePanInteraction={true}
+              onNodeClick={onNodeClick}
+              onNodeHover={(n: any) => setHovered((n as RFGNode) ?? null)}
+              onNodeDragEnd={(n: any) => {
+                n.fx = n.x;
+                n.fy = n.y;
+              }}
+            />
+          ) : (
+            <ForceGraph3D
+              ref={graphRef}
+              width={size.w}
+              height={size.h}
+              graphData={graphData}
+              backgroundColor="rgba(0,0,0,0)"
+              nodeLabel={(n: any) => (n as RFGNode).title}
+              nodeColor={(n: any) => resolveColor((n as RFGNode).color)}
+              nodeVal={(n: any) => {
+                const node = n as RFGNode;
+                return Math.pow(node.size * settings.nodeSize, 2) * 0.3;
+              }}
+              nodeOpacity={0.92}
+              linkColor={linkColor}
+              linkWidth={(l: any) => {
+                const link = l as RFGLink;
+                return link.kind === "tag"
+                  ? 0.6 * settings.linkThickness
+                  : 1 * settings.linkThickness;
+              }}
+              linkOpacity={0.55}
+              linkDirectionalArrowLength={settings.arrows ? 3 : 0}
+              linkDirectionalArrowRelPos={1}
+              cooldownTicks={300}
+              enableNodeDrag={true}
+              enableNavigationControls={true}
+              showNavInfo={false}
+              onNodeClick={onNodeClick}
+              onNodeHover={(n: any) => setHovered((n as RFGNode) ?? null)}
+              onNodeDragEnd={(n: any) => {
+                n.fx = n.x;
+                n.fy = n.y;
+                n.fz = n.z;
+              }}
+            />
+          )}
         </div>
 
-        <aside className="w-72 shrink-0 border-l border-border bg-bg-elev-1 p-4 space-y-5 overflow-y-auto">
-          <section>
-            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-              Фильтры
-            </h3>
-            <div className="mt-2 space-y-2">
-              <label className="flex items-center justify-between text-[12px] text-fg-muted">
-                Показывать изолированные
-                <input
-                  type="checkbox"
-                  checked={showOrphans}
-                  onChange={(e) => setShowOrphans(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[var(--accent)]"
-                />
-              </label>
-              <label className="flex items-center justify-between text-[12px] text-fg-muted">
-                Теги как узлы
-                <input
-                  type="checkbox"
-                  checked={showTags}
-                  onChange={(e) => setShowTags(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[var(--accent)]"
-                />
-              </label>
-              <label className="flex items-center justify-between text-[12px] text-fg-muted">
-                <span className="flex items-center gap-1.5">
-                  «Ghost»-узлы
-                  <span className="text-[10px] text-fg-subtle">несуществующие [[ссылки]]</span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={showGhosts}
-                  onChange={(e) => setShowGhosts(e.target.checked)}
-                  className="h-3.5 w-3.5 accent-[var(--accent)]"
-                />
-              </label>
-            </div>
-          </section>
+        <aside className="w-72 shrink-0 border-l border-border bg-bg-elev-1 overflow-y-auto">
+          <Group
+            open={openFilters}
+            onToggle={() => setOpenFilters(!openFilters)}
+            title="Фильтры"
+          >
+            <Toggle
+              label="Показывать изолированные"
+              checked={settings.showOrphans}
+              onChange={(v) => patch({ showOrphans: v })}
+            />
+            <Toggle
+              label="Только существующие"
+              hint="Скрыть [[несуществующие]] ссылки"
+              checked={settings.showExistingOnly}
+              onChange={(v) => patch({ showExistingOnly: v })}
+            />
+            <Toggle
+              label="Ghost-узлы"
+              hint="Пунктирные [[несозданные]]"
+              checked={settings.showGhosts && !settings.showExistingOnly}
+              disabled={settings.showExistingOnly}
+              onChange={(v) => patch({ showGhosts: v })}
+            />
+            <Toggle
+              label="Теги как узлы"
+              checked={settings.showTags}
+              onChange={(v) => patch({ showTags: v })}
+            />
 
-          {allTags.length > 0 && (
-            <section>
-              <div className="flex items-center justify-between mb-1.5">
-                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-                  Теги
-                </h3>
-                {tagFilter.size > 0 && (
-                  <button
-                    className="text-[10.5px] text-fg-subtle hover:text-fg"
-                    onClick={() => setTagFilter(new Set())}
-                  >
-                    очистить
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {allTags.map(([t, count]) => {
-                  const active = tagFilter.has(t);
-                  return (
+            {topTags.length > 0 && (
+              <div className="mt-2">
+                <div className="text-[10px] uppercase tracking-wider text-fg-subtle mb-1">
+                  Быстрые теги
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {topTags.slice(0, 12).map(([t, count]) => (
                     <button
                       key={t}
-                      onClick={() => toggleTagFilter(t)}
-                      className={
-                        "rounded-full border px-2 py-0.5 text-[11px] transition-colors " +
-                        (active
-                          ? "border-accent bg-accent-soft text-accent"
-                          : "border-border text-fg-muted hover:bg-bg-elev-2 hover:text-fg")
+                      onClick={() =>
+                        patch({
+                          search: settings.search ? `${settings.search} tag:${t}` : `tag:${t}`,
+                        })
                       }
+                      className="rounded-full border border-border bg-bg px-2 py-0.5 text-[11px] text-fg-muted hover:bg-bg-elev-2 hover:text-fg"
+                      title="Добавить в поиск"
                     >
                       #{t}
-                      <span className="ml-1 text-[10px] opacity-70">{count}</span>
+                      <span className="ml-1 text-[10px] opacity-60">{count}</span>
                     </button>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </section>
-          )}
+            )}
+          </Group>
 
-          <section>
-            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-              Цветовая группа
-            </h3>
-            <div className="mt-2 flex gap-1">
-              {(["folder", "tag", "uniform"] as ColorBy[]).map((c) => (
-                <button
-                  key={c}
-                  onClick={() => setColorBy(c)}
-                  className={
-                    "flex-1 rounded-md border px-2 py-1 text-[11px] transition-colors " +
-                    (colorBy === c
-                      ? "border-accent bg-accent-soft text-accent"
-                      : "border-border text-fg-muted hover:bg-bg-elev-2 hover:text-fg")
-                  }
-                >
-                  {c === "folder" ? "Папка" : c === "tag" ? "Тег" : "Без"}
-                </button>
-              ))}
-            </div>
-          </section>
+          <Group
+            open={openGroups}
+            onToggle={() => setOpenGroups(!openGroups)}
+            title="Цветовые группы"
+          >
+            <ColorGroupsEditor
+              groups={settings.groups}
+              onChange={(groups) => patch({ groups })}
+            />
+          </Group>
 
-          <section>
-            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-              Физика
-            </h3>
-            <div className="mt-3 space-y-3">
-              <Slider
-                label="Длина связи"
-                min={30}
-                max={260}
-                value={linkDistance}
-                onChange={setLinkDistance}
-              />
-              <Slider
-                label="Сила связи"
-                min={5}
-                max={100}
-                value={Math.round(linkStrength * 100)}
-                onChange={(v) => setLinkStrength(v / 100)}
-                suffix="%"
-              />
-              <Slider
-                label="Отталкивание"
-                min={-500}
-                max={-40}
-                value={charge}
-                onChange={setCharge}
-              />
-              <Slider
-                label="Притяжение к центру"
-                min={0}
-                max={50}
-                value={Math.round(centerStrength * 100)}
-                onChange={(v) => setCenterStrength(v / 100)}
-                suffix="%"
-              />
-            </div>
-          </section>
+          <Group
+            open={openDisplay}
+            onToggle={() => setOpenDisplay(!openDisplay)}
+            title="Отображение"
+          >
+            <Toggle
+              label="Стрелки на связях"
+              checked={settings.arrows}
+              onChange={(v) => patch({ arrows: v })}
+            />
+            <Toggle
+              label="Цвет связи по узлу"
+              hint="Связь окрашивается в цвет источника"
+              checked={settings.lineColorWithGroup}
+              onChange={(v) => patch({ lineColorWithGroup: v })}
+            />
+            <Slider
+              label="Размер узла"
+              min={50}
+              max={300}
+              value={Math.round(settings.nodeSize * 100)}
+              onChange={(v) => patch({ nodeSize: v / 100 })}
+              suffix="%"
+            />
+            <Slider
+              label="Толщина связи"
+              min={50}
+              max={300}
+              value={Math.round(settings.linkThickness * 100)}
+              onChange={(v) => patch({ linkThickness: v / 100 })}
+              suffix="%"
+            />
+            <Slider
+              label="Подписи появляются с"
+              min={50}
+              max={300}
+              value={Math.round(settings.textFadeThreshold * 100)}
+              onChange={(v) => patch({ textFadeThreshold: v / 100 })}
+              suffix="%"
+            />
+          </Group>
 
-          {groups.length > 0 && (
-            <section>
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
-                Группы
-              </h3>
-              <div className="mt-2 space-y-1 max-h-44 overflow-y-auto">
-                {groups.map(([name, color]) => (
-                  <div key={name} className="flex items-center gap-2 text-[12px] text-fg-muted">
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ background: color }}
-                    />
-                    <span className="truncate">{name}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
+          <Group
+            open={openForces}
+            onToggle={() => setOpenForces(!openForces)}
+            title="Силы"
+          >
+            <Slider
+              label="Центр"
+              min={0}
+              max={50}
+              value={Math.round(settings.centerForce * 100)}
+              onChange={(v) => patch({ centerForce: v / 100 })}
+              suffix="%"
+            />
+            <Slider
+              label="Отталкивание"
+              min={-1500}
+              max={-20}
+              value={settings.repelForce}
+              onChange={(v) => patch({ repelForce: v })}
+            />
+            <Slider
+              label="Сила связи"
+              min={5}
+              max={200}
+              value={Math.round(settings.linkForce * 100)}
+              onChange={(v) => patch({ linkForce: v / 100 })}
+              suffix="%"
+            />
+            <Slider
+              label="Длина связи"
+              min={20}
+              max={400}
+              value={settings.linkDistance}
+              onChange={(v) => patch({ linkDistance: v })}
+            />
+          </Group>
 
-          <section>
+          <section className="border-t border-border p-4">
             <h3 className="text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">
               Управление
             </h3>
             <ul className="mt-2 space-y-1 text-[11.5px] text-fg-subtle leading-relaxed">
-              <li>Двойной клик — открыть заметку</li>
+              <li>Клик по узлу — открыть заметку</li>
+              <li>Клик по ghost-узлу — диалог создания</li>
               <li>Тащи узел — переместить и закрепить</li>
               <li>Колесо — масштаб, ЛКМ по фону — пан</li>
-              <li>Поиск сверху — подсветить совпадения</li>
+              <li>3D: ПКМ — вращать камеру</li>
             </ul>
           </section>
         </aside>
       </div>
+
+      {ghostPrompt && (
+        <GhostCreateDialog
+          title={ghostPrompt.title}
+          onCancel={() => setGhostPrompt(null)}
+          onCreate={() => createFromGhost(ghostPrompt.title)}
+        />
+      )}
     </div>
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Sidebar UI helpers ───────────────────────────────────────────────
 
-function nodeRadius(n: GraphNode): number {
-  return Math.min(NODE_MAX_RADIUS, NODE_BASE_RADIUS + Math.sqrt(n.links) * NODE_LINK_BOOST);
+function Group({
+  title,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-b border-border last:border-b-0">
+      <button
+        onClick={onToggle}
+        className="flex w-full items-center justify-between px-4 py-3 hover:bg-bg-elev-2 text-left"
+      >
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-fg">{title}</span>
+        {open ? (
+          <ChevronDown size={12} className="text-fg-subtle" />
+        ) : (
+          <ChevronRight size={12} className="text-fg-subtle" />
+        )}
+      </button>
+      {open && <div className="px-4 pb-4 pt-1 space-y-2.5">{children}</div>}
+    </section>
+  );
 }
 
-function hitTest(nodes: GraphNode[], x: number, y: number): GraphNode | null {
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    const n = nodes[i];
-    if (n.x == null || n.y == null) continue;
-    const r = nodeRadius(n) + 2;
-    const dx = x - n.x;
-    const dy = y - n.y;
-    if (dx * dx + dy * dy <= r * r) return n;
-  }
-  return null;
-}
-
-function pickNode(
-  event: MouseEvent | TouchEvent,
-  canvas: HTMLCanvasElement,
-  nodes: GraphNode[],
-  t: ZoomTransform,
-): GraphNode | null {
-  const point = "touches" in event ? event.touches[0] : event;
-  if (!point) return null;
-  const rect = canvas.getBoundingClientRect();
-  const mx = (point.clientX - rect.left - t.x) / t.k;
-  const my = (point.clientY - rect.top - t.y) / t.k;
-  return hitTest(nodes, mx, my);
-}
-
-function resolveColor(c: string, root: CSSStyleDeclaration): string {
-  if (!c.startsWith("var(")) return c;
-  const m = c.match(/var\(([^)]+)\)/);
-  if (!m) return c;
-  return root.getPropertyValue(m[1].trim()).trim() || "#94a3b8";
-}
-
-function withAlpha(c: string, alpha: number): string {
-  if (c.startsWith("#") && (c.length === 7 || c.length === 4)) {
-    const r = c.length === 4 ? parseInt(c[1] + c[1], 16) : parseInt(c.slice(1, 3), 16);
-    const g = c.length === 4 ? parseInt(c[2] + c[2], 16) : parseInt(c.slice(3, 5), 16);
-    const b = c.length === 4 ? parseInt(c[3] + c[3], 16) : parseInt(c.slice(5, 7), 16);
-    return `rgba(${r},${g},${b},${alpha})`;
-  }
-  if (c.startsWith("oklch(") || c.startsWith("rgb(") || c.startsWith("hsl(")) {
-    return c.replace(/\)$/, ` / ${alpha})`);
-  }
-  return c;
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label
+      className={cn(
+        "flex items-center justify-between gap-2 text-[12px]",
+        disabled ? "text-fg-subtle opacity-60" : "text-fg-muted",
+      )}
+    >
+      <span className="flex flex-col">
+        <span>{label}</span>
+        {hint && <span className="text-[10.5px] text-fg-subtle">{hint}</span>}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-3.5 w-3.5 accent-[var(--accent)]"
+      />
+    </label>
+  );
 }
 
 function Slider({
@@ -1043,4 +803,117 @@ function Slider({
       />
     </div>
   );
+}
+
+function ColorGroupsEditor({
+  groups,
+  onChange,
+}: {
+  groups: ColorGroup[];
+  onChange: (g: ColorGroup[]) => void;
+}) {
+  const update = (i: number, patchObj: Partial<ColorGroup>) => {
+    const next = [...groups];
+    next[i] = { ...next[i], ...patchObj };
+    onChange(next);
+  };
+  const remove = (i: number) => onChange(groups.filter((_, j) => j !== i));
+  const add = () => onChange([...groups, { query: "tag:new", color: "#3b82f6" }]);
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-fg-subtle leading-relaxed">
+        Правила покраски узлов. Операторы: <code>tag:foo</code>, <code>path:bar</code>,{" "}
+        <code>line:слово</code>. Первое совпавшее правило выигрывает.
+      </p>
+      {groups.map((g, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <input
+            type="color"
+            value={g.color.startsWith("#") ? g.color : "#3b82f6"}
+            onChange={(e) => update(i, { color: e.target.value })}
+            className="h-6 w-6 shrink-0 cursor-pointer rounded border border-border bg-transparent"
+          />
+          <Input
+            value={g.query}
+            onChange={(e) => update(i, { query: e.target.value })}
+            placeholder="tag:foo, path:Work, #idea"
+            className="h-7 flex-1 text-[11.5px] font-mono"
+          />
+          <button
+            onClick={() => remove(i)}
+            className="rounded p-1 text-fg-subtle hover:bg-bg-elev-2 hover:text-danger"
+            title="Удалить"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      ))}
+      <Button size="sm" variant="secondary" onClick={add} className="w-full">
+        <Plus size={11} /> Добавить группу
+      </Button>
+    </div>
+  );
+}
+
+function GhostCreateDialog({
+  title,
+  onCancel,
+  onCreate,
+}: {
+  title: string;
+  onCancel: () => void;
+  onCreate: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-bg-elev-1 p-5 shadow-2xl fade-up">
+        <div className="text-[15px] font-semibold tracking-tight mb-1">Создать заметку?</div>
+        <p className="text-[12px] text-fg-muted mb-4">
+          На неё указывает <code>[[{title}]]</code>, но самой заметки ещё нет. Создать сейчас?
+        </p>
+        <div className="flex gap-2">
+          <Button onClick={onCreate} className="flex-1">
+            Создать «{title.length > 22 ? title.slice(0, 22) + "…" : title}»
+          </Button>
+          <Button variant="secondary" onClick={onCancel}>
+            Отмена
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── helpers ──────────────────────────────────────────────────────────
+
+function getCss(name: string, fallback: string): string {
+  if (typeof document === "undefined") return fallback;
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function resolveColor(c: string): string {
+  if (!c) return "#94a3b8";
+  if (!c.startsWith("var(")) return c;
+  const m = c.match(/var\(([^)]+)\)/);
+  if (!m) return c;
+  return getCss(m[1].trim(), "#94a3b8");
+}
+
+function withAlpha(c: string, alpha: number): string {
+  if (c.startsWith("#") && (c.length === 7 || c.length === 4)) {
+    const r = c.length === 4 ? parseInt(c[1] + c[1], 16) : parseInt(c.slice(1, 3), 16);
+    const g = c.length === 4 ? parseInt(c[2] + c[2], 16) : parseInt(c.slice(3, 5), 16);
+    const b = c.length === 4 ? parseInt(c[3] + c[3], 16) : parseInt(c.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  if (c.startsWith("oklch(") || c.startsWith("rgb(") || c.startsWith("hsl(")) {
+    return c.replace(/\)$/, ` / ${alpha})`);
+  }
+  return c;
 }

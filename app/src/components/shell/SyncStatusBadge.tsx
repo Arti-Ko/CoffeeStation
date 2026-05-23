@@ -33,6 +33,21 @@ export function SyncStatusBadge() {
   const stateRef = useRef<SyncState>("idle");
   useEffect(() => { stateRef.current = state; }, [state]);
 
+  // Single ref for the "fade ok back to idle" timer so successive sync ops
+  // don't stack up handles that fight to set state.
+  const resetToIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (resetToIdleTimerRef.current) clearTimeout(resetToIdleTimerRef.current);
+  }, []);
+
+  const scheduleResetToIdle = useCallback(() => {
+    if (resetToIdleTimerRef.current) clearTimeout(resetToIdleTimerRef.current);
+    resetToIdleTimerRef.current = setTimeout(() => {
+      if (stateRef.current === "ok") setState("idle");
+      resetToIdleTimerRef.current = null;
+    }, 4000);
+  }, []);
+
   const runPush = useCallback(async (reason: string) => {
     const c = cfgRef.current;
     if (!c || !c.repoUrl || !c.token || stateRef.current === "pushing") return;
@@ -46,8 +61,8 @@ export function SyncStatusBadge() {
       setState("error");
       setMessage(res.message);
     }
-    setTimeout(() => stateRef.current === "ok" && setState("idle"), 4000);
-  }, []);
+    scheduleResetToIdle();
+  }, [scheduleResetToIdle]);
 
   const runPull = useCallback(async (reason: string) => {
     const c = cfgRef.current;
@@ -62,8 +77,8 @@ export function SyncStatusBadge() {
       setState("error");
       setMessage(res.message);
     }
-    setTimeout(() => stateRef.current === "ok" && setState("idle"), 4000);
-  }, []);
+    scheduleResetToIdle();
+  }, [scheduleResetToIdle]);
 
   // ── Window blur → push, focus → pull
   useEffect(() => {
@@ -82,26 +97,42 @@ export function SyncStatusBadge() {
   }, [runPush, runPull]);
 
   // ── Idle detection
+  //
+  // Only attach the listeners when idle sync is actually enabled. Previously
+  // they were always-on (5 window listeners firing on every mouse move /
+  // keystroke / wheel tick) and only the rearm logic checked the config —
+  // so the listeners cost was paid even by users who never enabled sync.
+  //
+  // Additionally throttle `arm()` to once per second. With `mousemove`
+  // firing 60+ times per second, the previous version was clearing and
+  // re-creating a timeout on every pixel of cursor movement.
   useEffect(() => {
+    if (!cfg?.autoIdleEnabled || !cfg?.repoUrl) return;
+
     const evts = ["keydown", "mousedown", "mousemove", "wheel", "touchstart"] as const;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastArmAt = 0;
+    const ms = Math.max(60, cfg.idleMinutes ?? 7) * 60 * 1000;
 
     const arm = () => {
       if (timer) clearTimeout(timer);
-      const c = cfgRef.current;
-      if (!c?.autoIdleEnabled) return;
-      const ms = Math.max(60, c.idleMinutes ?? 7) * 60 * 1000;
       timer = setTimeout(() => runPush("idle"), ms);
     };
 
-    const onAct = () => arm();
+    const onAct = () => {
+      const now = performance.now();
+      if (now - lastArmAt < 1000) return;
+      lastArmAt = now;
+      arm();
+    };
+
     evts.forEach((e) => window.addEventListener(e, onAct, { passive: true }));
     arm();
     return () => {
       evts.forEach((e) => window.removeEventListener(e, onAct));
       if (timer) clearTimeout(timer);
     };
-  }, [runPush, cfg?.autoIdleEnabled, cfg?.idleMinutes]);
+  }, [runPush, cfg?.autoIdleEnabled, cfg?.idleMinutes, cfg?.repoUrl]);
 
   if (!cfg?.repoUrl) return null;
 

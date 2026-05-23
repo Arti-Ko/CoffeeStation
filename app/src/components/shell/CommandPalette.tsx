@@ -4,7 +4,7 @@ import { Command } from "cmdk";
 import { useEffect, useMemo, useState } from "react";
 import { useApp } from "@/lib/store";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "@/lib/db/schema";
+import { db, type Note, type Database } from "@/lib/db/schema";
 import Fuse from "fuse.js";
 import {
   FileText,
@@ -22,10 +22,28 @@ import { plainText } from "@/lib/utils";
 import { createNewNote } from "@/lib/db/note-create";
 
 export function CommandPalette() {
-  const { commandPaletteOpen, setCommandPaletteOpen, setView } = useApp();
+  const commandPaletteOpen = useApp((s) => s.commandPaletteOpen);
+  const setCommandPaletteOpen = useApp((s) => s.setCommandPaletteOpen);
+  const setView = useApp((s) => s.setView);
   const [search, setSearch] = useState("");
-  const notes = useLiveQuery(() => db.notes.toArray()) ?? [];
-  const databases = useLiveQuery(() => db.databases.toArray()) ?? [];
+
+  // Gate both live queries on `commandPaletteOpen`. When the palette is
+  // closed, the query returns an empty array immediately — Dexie's
+  // observable still exists but with no table reads. That stops the
+  // auto-save in the editor from firing a full `db.notes.toArray()` +
+  // DOMParser pass + Fuse-index rebuild on every single keystroke just
+  // to keep this hidden component "fresh". The real data is re-fetched
+  // the next time the user hits ⌘K.
+  const notes =
+    useLiveQuery<Note[]>(
+      () => (commandPaletteOpen ? db.notes.toArray() : Promise.resolve([])),
+      [commandPaletteOpen],
+    ) ?? [];
+  const databases =
+    useLiveQuery<Database[]>(
+      () => (commandPaletteOpen ? db.databases.toArray() : Promise.resolve([])),
+      [commandPaletteOpen],
+    ) ?? [];
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

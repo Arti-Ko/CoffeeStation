@@ -156,6 +156,18 @@ export async function deleteDirAt(path: string): Promise<void> {
 }
 
 /**
+ * Move or rename a file/dir on disk. Used by the move-into-folder flow so the
+ * physical vault tree mirrors the in-app folder tree. Idempotent — missing
+ * source resolves as success (the in-app DB already changed, and there's
+ * nothing to move on disk).
+ */
+export async function renameAt(from: string, to: string): Promise<void> {
+  if (!isDesktop() || !from || !to || from === to) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("rename_at", { from, to });
+}
+
+/**
  * Build the slash-separated folder chain a note lives under, walking the
  * given folder map. Same shape `mirrorNoteToDisk` expects.
  */

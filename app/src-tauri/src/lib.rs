@@ -416,6 +416,61 @@ async fn scan_vault(root: String) -> Result<Vec<ScannedFile>, String> {
     Ok(out)
 }
 
+/// Walk the vault and return every directory's relative path. Used so the app
+/// can mirror empty folders that the user created via Finder — `scan_vault`
+/// only yields directories that contain a `.md`/`.txt` file, so empty ones
+/// were invisible until you dropped a file inside.
+#[tauri::command]
+async fn scan_vault_dirs(root: String) -> Result<Vec<String>, String> {
+    let root_path = std::path::PathBuf::from(&root);
+    if !root_path.exists() {
+        return Err(format!("Папка не найдена: {root}"));
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> = vec![root_path.clone()];
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("read_dir failed for {dir:?}: {e}");
+                continue;
+            }
+        };
+        loop {
+            let entry = match entries.next_entry().await {
+                Ok(Some(e)) => e,
+                Ok(None) => break,
+                Err(_) => break,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Same skip rules as scan_vault — keep them in lockstep, or the
+            // app and Rust will disagree on what a "folder" is.
+            if name.starts_with('.') {
+                continue;
+            }
+            if matches!(name.as_str(), "node_modules" | "target") {
+                continue;
+            }
+            let path = entry.path();
+            let ft = match entry.file_type().await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(&root_path) {
+                let rel_str = rel.to_string_lossy().to_string();
+                if !rel_str.is_empty() {
+                    out.push(rel_str);
+                }
+            }
+            stack.push(path);
+        }
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 async fn mirror_note_to_disk(
     path: String,
@@ -1401,6 +1456,30 @@ async fn delete_file_at(path: String) -> Result<(), String> {
     }
 }
 
+/// Rename or move a path on disk. Used to mirror in-app folder moves so the
+/// vault directory tree stays in lockstep with the DB tree. Creates the
+/// destination's parent if it doesn't exist, and treats "source missing" as a
+/// soft success (the caller typically built the path from stale data — no
+/// reason to fail loudly).
+#[tauri::command]
+async fn rename_at(from: String, to: String) -> Result<(), String> {
+    let from_path = std::path::PathBuf::from(&from);
+    let to_path = std::path::PathBuf::from(&to);
+    if !from_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = to_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("create parent {parent:?}: {e}"))?;
+        }
+    }
+    tokio::fs::rename(&from_path, &to_path)
+        .await
+        .map_err(|e| format!("rename {from} -> {to}: {e}"))
+}
+
 /// Recursive directory removal. Used when a user deletes a folder in the app
 /// so its on-disk mirror does not become a ghost of stale `.md` files (which
 /// would re-import the next time the vault is scanned).
@@ -1445,7 +1524,9 @@ pub fn run() {
             mirror_note_to_disk,
             delete_file_at,
             delete_dir_at,
+            rename_at,
             scan_vault,
+            scan_vault_dirs,
             git_check,
             git_init_or_clone,
             git_pull,

@@ -53,10 +53,20 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
 
   const { invoke } = await import("@tauri-apps/api/core");
   const files = await invoke<ScannedFile[]>("scan_vault", { root: rootPath });
+  // Also enumerate every directory under the vault so empty ones the user
+  // created via Finder show up in the sidebar. Without this they'd stay
+  // invisible until the user dropped a file inside.
+  let diskDirs: string[] = [];
+  try {
+    diskDirs = await invoke<string[]>("scan_vault_dirs", { root: rootPath });
+  } catch {
+    // Older builds may not expose scan_vault_dirs; fall back to the
+    // file-derived folders below.
+  }
 
   const result: ImportResult = { files: files.length, notes: 0, folders: 0, skipped: 0, errors: [] };
 
-  if (files.length === 0) {
+  if (files.length === 0 && diskDirs.length === 0) {
     return result;
   }
 
@@ -72,15 +82,18 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
   });
 
   const allFolderPaths = new Set<string>();
-  files.forEach((f) => {
-    if (!f.folder) return;
-    const parts = f.folder.split(/[\\/]+/).filter(Boolean);
+  const addChain = (rawPath: string) => {
+    const parts = rawPath.split(/[\\/]+/).filter(Boolean);
     let cur = "";
     for (const p of parts) {
       cur = cur ? `${cur}/${p}` : p;
       allFolderPaths.add(cur);
     }
+  };
+  files.forEach((f) => {
+    if (f.folder) addChain(f.folder);
   });
+  diskDirs.forEach((d) => addChain(d.replace(/\\/g, "/")));
 
   const sortedFolderPaths = Array.from(allFolderPaths).sort();
   for (const relPath of sortedFolderPaths) {

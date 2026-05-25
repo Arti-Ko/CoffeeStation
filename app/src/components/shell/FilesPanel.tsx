@@ -32,6 +32,7 @@ import {
   FileType,
   FileSpreadsheet,
   FileCode,
+  RefreshCw,
 } from "lucide-react";
 import { db, type Folder as FolderRow, type Note } from "@/lib/db/schema";
 import { useApp } from "@/lib/store";
@@ -117,23 +118,42 @@ export function FilesPanel() {
   /** File currently open in the in-app viewer/editor modal. */
   const [previewFile, setPreviewFile] = useState<VaultFileEntry | null>(null);
 
-  // Rescan the vault folder on mount and whenever the user re-opens the panel.
-  // (Future: also re-trigger after import or sync; for now a manual remount works.)
+  // Rescan the vault folder on mount, on window focus, and whenever the
+  // panel remounts. Without this, files/folders the user creates via Finder
+  // stay invisible until the next manual import.
   useEffect(() => {
+    if (!isDesktop()) return;
     let cancelled = false;
-    (async () => {
-      if (!isDesktop()) return;
+    let lastRunAt = 0;
+    const refresh = async () => {
+      const now = Date.now();
+      // Coalesce focus storms (window manager fires focus multiple times
+      // during fast Cmd-Tab) into one scan per 2 seconds.
+      if (now - lastRunAt < 2000) return;
+      lastRunAt = now;
       const paths = await getVaultPaths();
       if (!paths.vaultRoot) return;
       try {
         const list = await scanVaultFiles(paths.vaultRoot);
         if (!cancelled) setVaultFiles(list.filter((f) => f.kind !== "note"));
       } catch {
-        /* ignore — vault may not yet exist */
+        /* vault may not yet exist */
       }
-    })();
+      try {
+        const { importVaultFromFolder } = await import("@/lib/desktop/import");
+        await importVaultFromFolder(paths.vaultRoot);
+      } catch {
+        /* import handles its own toasts when invoked manually; silent here */
+      }
+    };
+    void refresh();
+    const onFocus = () => void refresh();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("cs:vault-rescan", onFocus as EventListener);
     return () => {
       cancelled = true;
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("cs:vault-rescan", onFocus as EventListener);
     };
   }, []);
 
@@ -369,6 +389,13 @@ export function FilesPanel() {
               <SortMenuItem value="created-desc" current={sortMode} setValue={setSortMode}>Созданы — новые сверху</SortMenuItem>
             </MenuContent>
           </Menu>
+          <button
+            onClick={() => rescanVault()}
+            className="text-fg-subtle hover:text-fg p-1 rounded hover:bg-bg-elev-2"
+            title="Пересканировать vault на диске"
+          >
+            <RefreshCw size={13} />
+          </button>
           <button onClick={toggleFiles} className="text-fg-subtle hover:text-fg p-1 rounded hover:bg-bg-elev-2" title="Свернуть">
             <PanelLeftClose size={14} />
           </button>
@@ -1235,6 +1262,46 @@ interface MovedNote {
 }
 
 /**
+ * User-triggered "refresh from disk". Runs the same scan path as window focus
+ * but with a visible toast so the user knows something happened — particularly
+ * important for the "I just created a folder in Finder, where is it?" case
+ * where nothing visibly changes if the disk already matches the DB.
+ */
+async function rescanVault(): Promise<void> {
+  if (!isDesktop()) return;
+  const paths = await getVaultPaths();
+  if (!paths.vaultRoot) {
+    toast.error("Vault root не настроен");
+    return;
+  }
+  try {
+    const { importVaultFromFolder } = await import("@/lib/desktop/import");
+    const res = await importVaultFromFolder(paths.vaultRoot);
+    // Nudge the panel's own listener so vault-files (PDFs, images, etc.)
+    // also refresh in the same gesture.
+    window.dispatchEvent(new CustomEvent("cs:vault-rescan"));
+    const newStuff = res.notes + res.folders;
+    if (newStuff > 0) {
+      toast.success(`Подхвачено: ${res.notes} заметок · ${res.folders} папок`);
+    } else {
+      toast.info("Vault уже синхронизирован");
+    }
+  } catch (e) {
+    toast.error("Сканирование vault не удалось", {
+      description: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
+interface MovedFolder {
+  id: string;
+  /** chain BEFORE the move was committed (e.g. "Archive/2026-01") */
+  oldChain: string;
+  /** chain AFTER the move (e.g. "2026-05/Archive/2026-01") */
+  newChain: string;
+}
+
+/**
  * Sync notes' on-disk `.md` mirrors after their folder changed. Writes the
  * new file in the destination folder and deletes the stale file in the
  * previous one, keeping the on-disk vault in lockstep with the tree.
@@ -1256,6 +1323,26 @@ async function syncMovedNotesOnDisk(
     if (oldChain !== newChain || m.prevTitle !== note.title) {
       await deleteFileAt(noteDiskPath(paths.vaultRoot, oldChain, m.prevTitle)).catch(() => undefined);
     }
+  }
+}
+
+/**
+ * Mirror folder moves on disk by renaming the actual directory.
+ * Cheaper than re-mirroring every descendant note: one rename moves the
+ * whole subtree atomically. Called after the DB parentId mutation.
+ */
+async function syncMovedFoldersOnDisk(moves: MovedFolder[]): Promise<void> {
+  if (moves.length === 0) return;
+  const paths = await getVaultPaths();
+  if (!paths.vaultRoot) return;
+  const { renameAt } = await import("@/lib/desktop/paths");
+  const root = paths.vaultRoot.replace(/\/$/, "");
+  for (const m of moves) {
+    if (!m.oldChain) continue;
+    const from = `${root}/${m.oldChain}`;
+    const to = m.newChain ? `${root}/${m.newChain}` : root;
+    if (from === to) continue;
+    await renameAt(from, to).catch(() => undefined);
   }
 }
 
@@ -1301,13 +1388,22 @@ async function moveIntoFolder(
 
   // Snapshot each moved note's prior folder so we can also relocate the
   // on-disk .md (otherwise the file lingers in the previous folder).
-  const moves: MovedNote[] = [];
+  const noteMoves: MovedNote[] = [];
   if (noteIds.length > 0) {
     const prev = await db.notes.bulkGet(noteIds);
     prev.forEach((n) => {
-      if (n) moves.push({ id: n.id, prevFolderId: n.folderId, prevTitle: n.title });
+      if (n) noteMoves.push({ id: n.id, prevFolderId: n.folderId, prevTitle: n.title });
     });
   }
+
+  // Same idea for folders — compute old disk-chains BEFORE we mutate
+  // parentId, so we can rename the physical directories afterwards.
+  const foldersById = new Map(allFolders.map((f) => [f.id, f]));
+  const folderMoves: MovedFolder[] = safeFolderIds.map((id) => ({
+    id,
+    oldChain: folderChain(id, foldersById),
+    newChain: "", // filled in after the DB update
+  }));
 
   if (safeFolderIds.length > 0) {
     await db.folders.bulkUpdate(
@@ -1320,9 +1416,21 @@ async function moveIntoFolder(
     );
   }
 
+  // Recompute chains from the post-mutation state so the renames point at
+  // the right destination. We fetch the folders fresh because the parent
+  // id we use lives in `targetFolderId` may itself have moved this turn.
+  if (folderMoves.length > 0) {
+    const freshFolders = await db.folders.toArray();
+    const freshById = new Map(freshFolders.map((f) => [f.id, f]));
+    folderMoves.forEach((m) => {
+      m.newChain = folderChain(m.id, freshById);
+    });
+  }
+
   // Fire-and-forget on-disk sync — UI doesn't need to wait, and we don't
   // want a vault-mirror failure to block the in-app move.
-  void syncMovedNotesOnDisk(moves, new Map(allFolders.map((f) => [f.id, f])));
+  void syncMovedNotesOnDisk(noteMoves, foldersById);
+  void syncMovedFoldersOnDisk(folderMoves);
 
   const total = safeFolderIds.length + noteIds.length;
   toast.success(`Перемещено: ${total}`);

@@ -9,11 +9,15 @@ import { ru } from "date-fns/locale";
 import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { nanoid } from "nanoid";
+import { buildDailyTemplateHtml } from "@/lib/daily/template";
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
 
 export function DailyNotesView() {
   const [month, setMonth] = useState(new Date());
   const dailies = useLiveQuery(() => db.notes.where("type").equals("daily").toArray()) ?? [];
-  const templates = useLiveQuery(() => db.templates.where("category").equals("daily").toArray()) ?? [];
   const setView = useApp((s) => s.setView);
 
   const days = useMemo(
@@ -29,15 +33,17 @@ export function DailyNotesView() {
       setView({ kind: "note", id: existing.id });
       return;
     }
-    const tpl = templates[0];
     const title = format(d, "yyyy-MM-dd · EEEE", { locale: ru });
-    const content = (tpl?.content ?? "<p></p>").replace("{{date}}", title);
+    // Pull yesterday's Сегодня block + current kanban state to populate
+    // the new note's Вчера sections automatically. Static templates can't
+    // do this — they don't know about the kanban board.
+    const content = await buildDailyTemplateHtml(d);
     const id = nanoid(10);
     await db.notes.add({
       id,
       title,
       content,
-      contentText: title,
+      contentText: stripHtml(content),
       type: "daily",
       folderId: null,
       tags: ["daily"],

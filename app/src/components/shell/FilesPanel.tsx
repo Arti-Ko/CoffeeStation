@@ -118,19 +118,16 @@ export function FilesPanel() {
   /** File currently open in the in-app viewer/editor modal. */
   const [previewFile, setPreviewFile] = useState<VaultFileEntry | null>(null);
 
-  // Rescan the vault folder on mount, on window focus, and whenever the
-  // panel remounts. Without this, files/folders the user creates via Finder
-  // stay invisible until the next manual import.
+  // Refresh the lightweight vault-files list (PDFs, images, etc.) on mount
+  // and when the user explicitly hits the refresh button. The heavy
+  // .md re-import is OFF the focus path — for a 3000+ note vault each pass
+  // takes long enough to freeze the UI for minutes, and macOS fires window
+  // focus often enough (Cmd-Tab, notification center, etc.) that it
+  // effectively pegged the app. Manual rescan via the toolbar button now.
   useEffect(() => {
     if (!isDesktop()) return;
     let cancelled = false;
-    let lastRunAt = 0;
     const refresh = async () => {
-      const now = Date.now();
-      // Coalesce focus storms (window manager fires focus multiple times
-      // during fast Cmd-Tab) into one scan per 2 seconds.
-      if (now - lastRunAt < 2000) return;
-      lastRunAt = now;
       const paths = await getVaultPaths();
       if (!paths.vaultRoot) return;
       try {
@@ -139,21 +136,13 @@ export function FilesPanel() {
       } catch {
         /* vault may not yet exist */
       }
-      try {
-        const { importVaultFromFolder } = await import("@/lib/desktop/import");
-        await importVaultFromFolder(paths.vaultRoot);
-      } catch {
-        /* import handles its own toasts when invoked manually; silent here */
-      }
     };
     void refresh();
-    const onFocus = () => void refresh();
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("cs:vault-rescan", onFocus as EventListener);
+    const onRescan = () => void refresh();
+    window.addEventListener("cs:vault-rescan", onRescan as EventListener);
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("cs:vault-rescan", onFocus as EventListener);
+      window.removeEventListener("cs:vault-rescan", onRescan as EventListener);
     };
   }, []);
 

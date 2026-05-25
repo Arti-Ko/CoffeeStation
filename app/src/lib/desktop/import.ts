@@ -138,6 +138,17 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
 
   for (const file of files) {
     try {
+      const existing = noteByVaultPath.get(file.path);
+      // Fast-path: file's mtime hasn't moved past what we already
+      // imported. Skip the markdown parse + frontmatter walk entirely —
+      // those steps alone are ~5ms per file on a desktop, which means
+      // ~17s wasted on every Pull for a 3500-note vault. The skip check
+      // *must* happen before any parsing.
+      if (existing && (existing.updatedAt ?? 0) >= file.modified) {
+        result.skipped += 1;
+        continue;
+      }
+
       const parsed = matter(file.content);
       const fm = (parsed.data ?? {}) as Record<string, unknown>;
       const body = parsed.content;
@@ -157,12 +168,7 @@ export async function importVaultFromFolder(rootPath: string): Promise<ImportRes
       const tags = Array.from(new Set([...fmTags, ...inlineTags]));
       const folderId = folderIdByPath.get(file.folder.replace(/\\/g, "/")) ?? null;
 
-      const existing = noteByVaultPath.get(file.path);
       if (existing) {
-        if ((existing.updatedAt ?? 0) >= file.modified) {
-          result.skipped += 1;
-          continue;
-        }
         toUpdate.push({
           key: existing.id,
           changes: {

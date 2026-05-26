@@ -3,6 +3,7 @@
 import { db, type Note } from "@/lib/db/schema";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
+import { extractTodayTasks } from "./parse";
 
 interface CarryOverResult {
   planned: string[];
@@ -60,7 +61,7 @@ async function collectCarryOver(date: Date): Promise<CarryOverResult> {
   const yesterday = await findPreviousDaily(date);
   if (!yesterday) return empty;
 
-  const planned = extractTodayPlannedTasks(yesterday.content);
+  const planned = extractTodayTasks(yesterday.content).map((t) => t.title);
   if (planned.length === 0) return empty;
 
   const [columns, cards] = await Promise.all([
@@ -110,40 +111,6 @@ async function findPreviousDaily(date: Date): Promise<Note | null> {
     .filter((n) => n.archivedAt == null && n.createdAt < startOfTarget)
     .sort((a, b) => b.createdAt - a.createdAt);
   return before[0] ?? null;
-}
-
-/**
- * Extract task titles from the "Сегодня" section of a daily note. Walks the
- * DOM to find the heading text "Сегодня" and grabs the next task list. Falls
- * back to "all task items in the note" if the heading isn't present, so old
- * notes from before this template change still produce a useful carry-over.
- */
-function extractTodayPlannedTasks(html: string): string[] {
-  if (typeof DOMParser === "undefined") return [];
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  // Find the heading whose text matches "Сегодня" (case-insensitive,
-  // emoji-tolerant). Then grab task items until the next h2/h3.
-  const headings = Array.from(doc.querySelectorAll("h1, h2, h3"));
-  const todayHeading = headings.find((h) =>
-    /сегодня/i.test((h.textContent ?? "").trim()),
-  );
-  if (todayHeading) {
-    const tasks: string[] = [];
-    let el: Element | null = todayHeading.nextElementSibling;
-    while (el && !/^h[1-3]$/i.test(el.tagName)) {
-      el.querySelectorAll('li[data-checked]').forEach((li) => {
-        const t = (li.textContent ?? "").trim();
-        if (t) tasks.push(t);
-      });
-      el = el.nextElementSibling;
-    }
-    return tasks;
-  }
-  // No heading? grab every task in the note. Old daily notes from before
-  // this template change land here.
-  return Array.from(doc.querySelectorAll('li[data-checked]'))
-    .map((li) => (li.textContent ?? "").trim())
-    .filter(Boolean);
 }
 
 interface TaskRow {

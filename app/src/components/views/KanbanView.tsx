@@ -31,6 +31,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
+import { extractTodayTasks } from "@/lib/daily/parse";
 
 /**
  * Kanban board view powered by @dnd-kit (more reliable than HTML5 native DnD
@@ -565,14 +566,19 @@ async function syncDailyTasks(opts: { silent?: boolean } = {}) {
   let completed = 0;
 
   for (const note of dailyNotes) {
-    if (typeof DOMParser === "undefined") continue;
-    const doc = new DOMParser().parseFromString(note.content, "text/html");
-    const taskItems = doc.querySelectorAll('li[data-checked]');
+    // Only sync the "Сегодня" section — the new daily template auto-fills
+    // a "Вчера" block with planned/done/not-done lists, and pulling THOSE
+    // into kanban would (a) re-create cards for tasks the user already
+    // actioned and (b) move yesterday's done items to the done column on
+    // today's board. extractTodayTasks scopes to the Сегодня heading; old
+    // notes without that heading fall back to whole-document scanning so
+    // pre-v0.2.27 dailies still sync.
+    const tasks = extractTodayTasks(note.content);
     const dayCreated = new Date(note.createdAt).toISOString().slice(0, 10);
 
-    for (const li of Array.from(taskItems)) {
-      const checked = li.getAttribute("data-checked") === "true";
-      const title = (li.textContent ?? "").trim();
+    for (const t of tasks) {
+      const checked = t.checked;
+      const title = t.title;
       if (!title) continue;
       const key = `${note.id}::${title}`;
       const existing = cardByKey.get(key);

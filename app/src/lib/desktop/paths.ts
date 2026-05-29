@@ -183,6 +183,34 @@ function chainOf(folderId: string | null, byId: Map<string, { id: string; name: 
 }
 
 /**
+ * Rename a note's on-disk `.md` mirror when its title changes. Without this,
+ * editing a title leaves the old `<oldTitle>.md` file behind while the next
+ * content save writes a fresh `<newTitle>.md` — producing an orphaned
+ * duplicate on disk that never reconciles back into the UI (import matches by
+ * path, so the stale file is never re-linked).
+ *
+ * Caller must pass the OLD title (still reflecting the file on disk) and the
+ * NEW title, plus the note's folder and the current folder list. Best-effort:
+ * a missing source resolves as success (renameAt is idempotent).
+ */
+export async function renameNoteOnDisk(
+  oldTitle: string,
+  newTitle: string,
+  folderId: string | null,
+  folders: { id: string; name: string; parentId: string | null }[],
+): Promise<void> {
+  if (!isDesktop()) return;
+  if (oldTitle === newTitle) return;
+  const paths = await getVaultPaths();
+  if (!paths.vaultRoot) return;
+  const byId = new Map(folders.map((f) => [f.id, f]));
+  const chain = chainOf(folderId, byId);
+  const from = noteDiskPath(paths.vaultRoot, chain, oldTitle);
+  const to = noteDiskPath(paths.vaultRoot, chain, newTitle);
+  await renameAt(from, to).catch(() => undefined);
+}
+
+/**
  * Remove every `.md` mirror of the given notes from the on-disk vault. Best-
  * effort: missing files are ignored. Called by every code path that deletes
  * or trashes notes — without it, deleted notes used to linger in the vault

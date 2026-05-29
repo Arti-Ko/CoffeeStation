@@ -3,6 +3,7 @@
 import { useEditor, EditorContent } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import type { Editor as TipTapEditor } from "@tiptap/core";
+import { TextSelection } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -157,6 +158,23 @@ export function Editor({
     editorProps: {
       attributes: {
         class: "max-w-3xl mx-auto focus:outline-none px-12 py-10",
+      },
+      // Constrain Cmd/Ctrl+A to the editor document. Without this, WKWebView
+      // (Tauri on macOS) falls back to its native "select everything on the
+      // page" behaviour and highlights the whole UI (sidebar, panels, …)
+      // instead of just the note content.
+      handleKeyDown(view, event) {
+        const isSelectAll = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a";
+        if (isSelectAll) {
+          event.preventDefault();
+          const { state } = view;
+          const tr = state.tr.setSelection(
+            TextSelection.create(state.doc, 0, state.doc.content.size),
+          );
+          view.dispatch(tr);
+          return true;
+        }
+        return false;
       },
       handlePaste(view, event) {
         const items = event.clipboardData?.items;
@@ -361,7 +379,13 @@ export function Editor({
       )}
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <EditorContent editor={editor} className="min-h-full" />
+          {/* A plain wrapper div is the Slot target. `EditorContent` renders a
+              React Fragment (host div + portals), which Radix's `asChild` Slot
+              cannot merge a ref/props onto — doing so detaches the
+              contenteditable from the keydown path and breaks Cmd+A. */}
+          <div className="min-h-full">
+            <EditorContent editor={editor} />
+          </div>
         </ContextMenuTrigger>
         <ContextMenuContent
           // Stop the menu from opening when the right-clicked spot isn't

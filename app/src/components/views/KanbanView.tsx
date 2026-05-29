@@ -91,6 +91,12 @@ export function KanbanView() {
 
   const deleteCard = async (cardId: string) => {
     if (!confirm("Удалить задачу?")) return;
+    // If the card was materialized from a daily note, tombstone its key so the
+    // auto-sync doesn't resurrect it from the still-present markdown task.
+    const card = await db.kanbanCards.get(cardId);
+    if (card?.dailyNoteId) {
+      await tombstoneTaskKey(`${card.dailyNoteId}::${card.title}`);
+    }
     await db.kanbanCards.delete(cardId);
   };
 
@@ -465,6 +471,11 @@ function CardSurface({
 
   const save = async () => {
     if (title.trim() && title !== card.title) {
+      // A renamed daily card no longer matches its source `<li>`. Tombstone the
+      // OLD key so the unchanged markdown task doesn't re-spawn a duplicate.
+      if (card.dailyNoteId) {
+        await tombstoneTaskKey(`${card.dailyNoteId}::${card.title}`);
+      }
       await db.kanbanCards.update(card.id, { title: title.trim() });
     }
     setEditing(false);
@@ -541,6 +552,27 @@ function CardSurface({
   );
 }
 
+/**
+ * Settings key holding the tombstone list of daily-task cards the user has
+ * deleted. Without it, `syncDailyTasks` re-creates a deleted card on the very
+ * next run (the source `<li>` is still in the note), so daily-linked cards
+ * appear immortal. Each entry is `${dailyNoteId}::${title}`.
+ */
+const DELETED_TASK_KEYS = "kanban.deletedTaskKeys";
+
+async function getDeletedTaskKeys(): Promise<Set<string>> {
+  const row = await db.settings.get(DELETED_TASK_KEYS);
+  const arr = Array.isArray(row?.value) ? (row!.value as string[]) : [];
+  return new Set(arr);
+}
+
+async function tombstoneTaskKey(key: string): Promise<void> {
+  const current = await getDeletedTaskKeys();
+  if (current.has(key)) return;
+  current.add(key);
+  await db.settings.put({ key: DELETED_TASK_KEYS, value: Array.from(current) });
+}
+
 async function syncDailyTasks(opts: { silent?: boolean } = {}) {
   const dailyNotes = await db.notes.filter((n) => n.type === "daily" && n.archivedAt == null).toArray();
   if (dailyNotes.length === 0) {
@@ -560,6 +592,9 @@ async function syncDailyTasks(opts: { silent?: boolean } = {}) {
   allCards.forEach((c) => {
     if (c.dailyNoteId) cardByKey.set(`${c.dailyNoteId}::${c.title}`, c);
   });
+  // Tasks the user explicitly deleted from the board must never be re-created
+  // or re-animated from the still-present markdown `<li>`.
+  const deletedKeys = await getDeletedTaskKeys();
 
   const todayStr = new Date().toISOString().slice(0, 10);
   let added = 0;
@@ -581,6 +616,7 @@ async function syncDailyTasks(opts: { silent?: boolean } = {}) {
       const title = t.title;
       if (!title) continue;
       const key = `${note.id}::${title}`;
+      if (deletedKeys.has(key)) continue; // user deleted this card — stay dead
       const existing = cardByKey.get(key);
 
       if (checked) {

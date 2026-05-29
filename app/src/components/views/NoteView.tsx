@@ -87,6 +87,20 @@ export function NoteView({ noteId }: { noteId: string }) {
   const saveTitle = useMemo(
     () =>
       debounce(async (val: string) => {
+        const current = await db.notes.get(noteId);
+        if (!current) return;
+        // Rename the on-disk mirror first so the title edit MOVES the file
+        // instead of leaving the old `<oldTitle>.md` orphaned next to a fresh
+        // `<newTitle>.md` written by the next content save.
+        if (current.title !== val) {
+          try {
+            const folders = await db.folders.toArray();
+            const { renameNoteOnDisk } = await import("@/lib/desktop/paths");
+            await renameNoteOnDisk(current.title, val, current.folderId, folders);
+          } catch {
+            // fail silently — IndexedDB is the source of truth
+          }
+        }
         await db.notes.update(noteId, { title: val, updatedAt: Date.now() });
       }, 400),
     [noteId],
